@@ -1,0 +1,5 @@
+{
+    "scripts": {
+        "watch": "bun build src/index.ts --outdir dist --outfile index.js --watch"
+    }
+}
