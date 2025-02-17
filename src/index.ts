@@ -120,9 +120,10 @@ namespace OKlab {
         let rr = l * +4.0767416621 + m * -3.3077115913 + s * +0.2309699292;
         let gg = l * -1.2684380046 + m * +2.6097574011 + s * -0.3413193965;
         let bb = l * -0.0041960863 + m * -0.7034186147 + s * +1.7076147010;
-        return [rr, gg, bb].map(
-            c => c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055
-        ) as Triple;
+        return [rr, gg, bb].map(c => {
+            const c01 = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+            return Math.max(Math.min(Math.round(c01 * 255), 255), 0);
+        }) as Triple;
     }
 }
 namespace ColorPacker {
@@ -178,7 +179,7 @@ function indexColors(data: Uint8ClampedArray) {
 }
 
 function naiveKmeansQuantizer(
-    data: { col: Triple, weight: number; }[],
+    data: ColorData[],
     finalCount: number,
     attempts: number, maxIteration = 100
 ) {
@@ -187,16 +188,83 @@ function naiveKmeansQuantizer(
     for (let i = 0; i < attempts; i++) {
         // Partial Fisher-Yates
         const n = shuffleArray.length;
-        const attemptPoints: Triple[] = []
+        const attemptPoints: Triple[] = [];
         for (let ii = 0; ii < finalCount; ii++) {
             const swapIndex = Math.floor(Math.random() * (n - ii));
             const targetIndex = n - ii - 1;
             [shuffleArray[swapIndex], shuffleArray[targetIndex]] = [shuffleArray[targetIndex], shuffleArray[swapIndex]];
-            attemptPoints.push(data[shuffleArray[targetIndex]].col)
+            attemptPoints.push(data[shuffleArray[targetIndex]].oklabColor);
         }
-        allAttemptPoints.push(attemptPoints)
+        allAttemptPoints.push(attemptPoints);
+    }
+    let attempt = 0;
+    // for (let attempt = 0; attempt < attempts; attempt++) {
+
+    for (let iteration = 0; iteration < maxIteration; iteration++) {
+        const centroids = allAttemptPoints[attempt].slice();
+        // console.log(centroids);
+
+        const centroidAssignedPoints = centroids.map(() => [] as ColorData[]);
+        // Assign each point to the centroid
+        for (const color of data) {
+            // Find closest centroid to that point
+            const { oklabColor: [pl, pa, pb] } = color;
+            let minDist = Infinity, minCentroidIndex = NaN;
+            for (let i = 0; i < centroids.length; i++) {
+                const [cl, ca, cb] = centroids[i];
+                const distance = Math.hypot(pl - cl, pa - ca, pb - cb);
+                if (distance < minDist) {
+                    minCentroidIndex = i;
+                    minDist = distance;
+                }
+            }
+            centroidAssignedPoints[minCentroidIndex].push(color);
+        }
+
+        // console.log('Centroid assigned points', centroidAssignedPoints);
+        const newCentroids = centroidAssignedPoints.map((points) => {
+            let totalL = 0, totalA = 0, totalB = 0;
+            let totalWeight = 0;
+            for (const { oklabColor: [l, a, b], count: weight } of points) {
+                totalL += weight * l;
+                totalA += weight * a;
+                totalB += weight * b;
+                totalWeight += weight;
+            }
+            return [totalL / totalWeight, totalA / totalWeight, totalB / totalWeight] as Triple;
+        });
+        // console.log('new Centroids:', newCentroids);
+
+        const centroidMovements = newCentroids.map(([l0, a0, b0], i) => {
+            const [l1, a1, b1] = centroids[i];
+            return Math.hypot(l1 - l0, a1 - a0, b1 - b0);
+        });
+        console.log('Centroid movements:\n' + centroidMovements.join('\n'));
+        allAttemptPoints[attempt] = newCentroids;
+
+        if (centroidMovements.every((s) => s < 0.00001)) {
+            break;
+        }
     }
 
+    // Assign each point to the centroid
+    const centroids = allAttemptPoints[attempt];
+    const assignment = data.map(({ oklabColor: [pl, pa, pb] }, i) => {
+        let minDist = Infinity, minCentroidIndex = NaN;
+        for (let i = 0; i < centroids.length; i++) {
+            const [cl, ca, cb] = centroids[i];
+            const distance = Math.hypot(pl - cl, pa - ca, pb - cb);
+            if (distance < minDist) {
+                minCentroidIndex = i;
+                minDist = distance;
+            }
+        }
+
+        return OKlab.toRgb(...centroids[minCentroidIndex]);
+    });
+    // }
+
+    return assignment;
 }
 
 function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
@@ -228,10 +296,15 @@ async function main() {
     const { indexArr, colorData } = indexColors(pixels);
     console.log(colorData);
 
-    const result = naiveKmeansQuantizer(
-        colorData.map((s) => ({ col: s.oklabColor, weight: s.count })),
-        8, 8,
-    );
+    const result = naiveKmeansQuantizer(colorData, 8, 8);
+    console.log(result);
+
+    for (let i = 0; i < indexArr.length; i++) {
+        const [r, g, b] = result[indexArr[i]];
+        pixels[4 * i + 0] = r;
+        pixels[4 * i + 1] = g;
+        pixels[4 * i + 2] = b;
+    }
 
     UI.createLabel(`Counted ${pixelCounts.size} pixels`);
     const img2 = document.createElement('img');
