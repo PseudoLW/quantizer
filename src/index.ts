@@ -155,7 +155,6 @@ type ColorData = {
     oklabColor: Triple;
 };
 function indexColors(data: Uint8ClampedArray) {
-    // const colorData: Map<number, { count: number, index: number; }> = new Map();
     const colorCodeToIndex = new Map<number, number>();
     const colorData = <ColorData[]>[];
     const indexArr = new Array<number>(data.length / 4);
@@ -176,6 +175,28 @@ function indexColors(data: Uint8ClampedArray) {
         indexArr[i / 4] = colorIndex;
     }
     return { colorData, indexArr };
+}
+
+function naiveKmeansQuantizer(
+    data: { col: Triple, weight: number; }[],
+    finalCount: number,
+    attempts: number, maxIteration = 100
+) {
+    const shuffleArray = data.map((_, i) => i);
+    const allAttemptPoints: Triple[][] = [];
+    for (let i = 0; i < attempts; i++) {
+        // Partial Fisher-Yates
+        const n = shuffleArray.length;
+        const attemptPoints: Triple[] = []
+        for (let ii = 0; ii < finalCount; ii++) {
+            const swapIndex = Math.floor(Math.random() * (n - ii));
+            const targetIndex = n - ii - 1;
+            [shuffleArray[swapIndex], shuffleArray[targetIndex]] = [shuffleArray[targetIndex], shuffleArray[swapIndex]];
+            attemptPoints.push(data[shuffleArray[targetIndex]].col)
+        }
+        allAttemptPoints.push(attemptPoints)
+    }
+
 }
 
 function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
@@ -204,7 +225,13 @@ async function main() {
     const pixels = pixelReader.read(img1);
     pruneRgbBits(pixels, 12);
     const pixelCounts = countColors(pixels);
-    console.log(indexColors(pixels));
+    const { indexArr, colorData } = indexColors(pixels);
+    console.log(colorData);
+
+    const result = naiveKmeansQuantizer(
+        colorData.map((s) => ({ col: s.oklabColor, weight: s.count })),
+        8, 8,
+    );
 
     UI.createLabel(`Counted ${pixelCounts.size} pixels`);
     const img2 = document.createElement('img');
