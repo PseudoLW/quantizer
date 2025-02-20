@@ -106,8 +106,13 @@ namespace Data {
     }
 }
 
-namespace OKlab {
-    export function fromRgb(r: number, g: number, b: number) {
+type ColorData = {
+    count: number;
+    oklabColor: Triple;
+};
+
+function indexColors(data: Uint8ClampedArray, postProgress: (n: number) => void) {
+    function fromRgb(r: number, g: number, b: number) {
         const [rr, gg, bb] = [r, g, b].map(
             c => {
                 const c01 = c / 255;
@@ -124,42 +129,29 @@ namespace OKlab {
             l * +0.0259040371 + m * +0.7827717662 + s * -0.8086757660
         ] as Triple;
     }
-}
-namespace ColorPacker {
-    export function pack(r: number, g: number, b: number) {
-        return (r << 12) | (g << 8) | (b << 0);
-    }
-    export function unpack(code: number) {
-        const r = (code >> 12) & 0xFF;
-        const g = (code >> 8) & 0xFF;
-        const b = (code >> 0) & 0xFF;
-        return [r, g, b] as Triple;
-    }
-}
 
-type ColorData = {
-    count: number;
-    oklabColor: Triple;
-};
-
-function indexColors(data: Uint8ClampedArray) {
     const colorCodeToIndex = new Map<number, number>();
     const colorData = <ColorData[]>[];
     const indexArr = new Array<number>(data.length / 4);
+    let lastProgressPercent = 0;
     for (let i = 0; i < data.length; i += 4) {
         const [r, g, b, a] = data.slice(i, i + 4);
-        const colorKey = ColorPacker.pack(r, g, b);
+        const colorKey = (r << 24) | (g << 12) | (b << 0);
         let colorIndex = colorCodeToIndex.get(colorKey);
         if (colorIndex === undefined) {
             colorIndex = colorData.length;
             colorCodeToIndex.set(colorKey, colorIndex);
             colorData.push({
                 count: a / 255,
-                oklabColor: OKlab.fromRgb(r, g, b)
+                oklabColor: fromRgb(r, g, b)
             });
         }
         colorData[colorIndex].count += a / 255;
         indexArr[i / 4] = colorIndex;
+        if (Math.floor(100 * i / data.length) > lastProgressPercent) {
+            postProgress(i / data.length);
+            lastProgressPercent = 100 * i / data.length;
+        }
     }
     return { colorData, indexArr };
 }
@@ -296,7 +288,7 @@ const naiveKmeans = (
                 break;
             }
 
-            postProgress( (attempt + Math.max(bestProgress, iteration / 100)) / attempts);
+            postProgress((attempt + Math.max(bestProgress, iteration / 100)) / attempts);
         }
 
         const centroids = allAttemptPoints[attempt];
@@ -332,33 +324,36 @@ function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
 
 async function main() {
     const KMeansWorker = FunctionWorker(naiveKmeans);
-
+    const IndexerWorker = FunctionWorker(indexColors);
     const { src, colorCount } = await UI.promptInputSrc();
 
     const img1 = document.createElement('img');
     await Data.loadImage(img1, src);
     const pixelReader = Data.ImageArrayConverter(img1);
 
-    const pixels = pixelReader.read(img1);
-    pruneRgbBits(pixels, 18);
-    const { indexArr, colorData } = indexColors(pixels);
-
     const progressDisplay = document.createElement('div');
     document.body.appendChild(progressDisplay);
-    const result = (await KMeansWorker.run(
-        {
-            data: colorData,
-            finalCount: colorCount,
-            attempts: 8,
-            maxIteration: 100
-        },
-        (progress) => {
-            const loadingBar = '█'
-                .repeat(Math.floor(50 * progress))
-                .padEnd(50, '░');
-            progressDisplay.textContent = `Working... [${loadingBar}]`;
-        }
-    ));
+    const setProgress = (label: string) => (progress: number) => {
+        const loadingBar = '█'
+            .repeat(Math.floor(50 * progress))
+            .padEnd(50, '░');
+        progressDisplay.textContent = `${label} [${loadingBar}]`;
+    };
+    const pixels = pixelReader.read(img1);
+
+    pruneRgbBits(pixels, 18);
+
+    const { indexArr, colorData } = await IndexerWorker.run(
+        pixels,
+        setProgress('Counting colors...')
+    );
+
+    const result = await KMeansWorker.run({
+        data: colorData,
+        finalCount: colorCount,
+        attempts: 8,
+        maxIteration: 100
+    }, setProgress('Quantizing...'));
 
 
     document.body.removeChild(progressDisplay);
