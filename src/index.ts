@@ -164,17 +164,34 @@ function indexColors(data: Uint8ClampedArray) {
     return { colorData, indexArr };
 }
 
-function convertIntoWorker<InType, OutType>(onMessage: (event: MessageEvent<InType>) => void) {
-    const fnStr = 'self.onmessage=' + onMessage.toString();
+function FunctionWorker<InType, OutType extends { finished: boolean; }>(
+    fn: (event: MessageEvent<InType>) => void
+) {
+    const fnStr = 'self.onmessage=' + fn.toString();
     const fileBlob = new Blob([fnStr], { type: 'text/javascript' });
     const fileUrl = URL.createObjectURL(fileBlob);
 
     const worker = new Worker(fileUrl);
-    return worker as {
-        postMessage(message: InType): void;
-        onmessage: (message: MessageEvent<OutType>) => void;
+    return {
+        run(
+            arg: InType,
+            onProgress: (data: OutType & { finished: false; }) => void
+        ) {
+            return new Promise<OutType & { finished: true; }>((res) => {
+                const fn = ({ data }: MessageEvent<OutType>) => {
+                    if (data.finished) {
+                        worker.removeEventListener('message', fn);
+                        res(data as OutType & { finished: true; });
+                    } else {
+                        onProgress(data as OutType & { finished: false; });
+                    }
+                };
+                worker.addEventListener('message', fn);
+                worker.postMessage(arg);
+            });
+        }
     };
-};
+}
 
 type KmeansWorkerMessage = {
     in: {
@@ -191,6 +208,10 @@ type KmeansWorkerMessage = {
         progress: number;
     };
 };
+
+
+declare function postMessage<T>(event: T): void;
+
 const naiveKmeansWorker = (event: MessageEvent<KmeansWorkerMessage['in']>) => {
     function toRgb(L: number, A: number, B: number) {
         let l = L + A * +0.3963377774 + B * +0.2158037573;
@@ -205,6 +226,20 @@ const naiveKmeansWorker = (event: MessageEvent<KmeansWorkerMessage['in']>) => {
             return Math.max(Math.min(Math.round(c01 * 255), 255), 0);
         }) as Triple;
     }
+
+    function closestCentroidIndex(centroids: Triple[], [pl, pa, pb]: Triple) {
+        let minDist = Infinity, minCentroidIndex = NaN;
+        for (let i = 0; i < centroids.length; i++) {
+            const [cl, ca, cb] = centroids[i];
+            const distance = Math.hypot(pl - cl, pa - ca, pb - cb);
+            if (distance < minDist) {
+                minCentroidIndex = i;
+                minDist = distance;
+            }
+        }
+        return [minCentroidIndex, minDist] as const;
+    }
+
     const { data, finalCount, attempts, maxIteration } = event.data;
     const shuffleArray = data.map((_, i) => i);
     const allAttemptPoints: Triple[][] = [];
@@ -220,74 +255,71 @@ const naiveKmeansWorker = (event: MessageEvent<KmeansWorkerMessage['in']>) => {
         }
         allAttemptPoints.push(attemptPoints);
     }
-    let attempt = 0;
-    // for (let attempt = 0; attempt < attempts; attempt++) {
 
-    for (let iteration = 0; iteration < maxIteration; iteration++) {
-        const centroids = allAttemptPoints[attempt].slice();
 
-        const centroidAssignedPoints = centroids.map(() => [] as ColorData[]);
-        for (const color of data) {
-            const { oklabColor: [pl, pa, pb] } = color;
-            let minDist = Infinity, minCentroidIndex = NaN;
-            for (let i = 0; i < centroids.length; i++) {
-                const [cl, ca, cb] = centroids[i];
-                const distance = Math.hypot(pl - cl, pa - ca, pb - cb);
-                if (distance < minDist) {
-                    minCentroidIndex = i;
-                    minDist = distance;
-                }
+    let bestAssignment: Triple[] = [];
+    let bestScore = Infinity;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+        let bestProgress = 0;
+        for (let iteration = 0; iteration < maxIteration; iteration++) {
+            const centroids = allAttemptPoints[attempt].slice();
+
+            const centroidAssignedPoints = centroids.map(() => [] as ColorData[]);
+            for (const color of data) {
+                const [index] = closestCentroidIndex(centroids, color.oklabColor);
+                centroidAssignedPoints[index].push(color);
             }
-            centroidAssignedPoints[minCentroidIndex].push(color);
+
+            const newCentroids = centroidAssignedPoints.map((points) => {
+                let totalL = 0, totalA = 0, totalB = 0;
+                let totalWeight = 0;
+                for (const { oklabColor: [l, a, b], count: weight } of points) {
+                    totalL += weight * l;
+                    totalA += weight * a;
+                    totalB += weight * b;
+                    totalWeight += weight;
+                }
+                return [totalL / totalWeight, totalA / totalWeight, totalB / totalWeight] as Triple;
+            });
+
+            const centroidMovements = newCentroids.map(([l0, a0, b0], i) => {
+                const [l1, a1, b1] = centroids[i];
+                return Math.hypot(l1 - l0, a1 - a0, b1 - b0);
+            });
+            allAttemptPoints[attempt] = newCentroids;
+            const maxCentroidMovements = Math.max(...centroidMovements);
+            const absoluteProgress = Math.min(-Math.log10(maxCentroidMovements) / 5, 1);
+            bestProgress = Math.max(absoluteProgress, bestProgress);
+
+            if (centroidMovements.every((s) => s < 0.00001)) {
+                break;
+            }
+
+            postMessage<KmeansWorkerMessage['out']>({
+                finished: false,
+                progress: (attempt + Math.max(bestProgress, iteration / 100)) / attempts
+            });
         }
 
-        const newCentroids = centroidAssignedPoints.map((points) => {
-            let totalL = 0, totalA = 0, totalB = 0;
-            let totalWeight = 0;
-            for (const { oklabColor: [l, a, b], count: weight } of points) {
-                totalL += weight * l;
-                totalA += weight * a;
-                totalB += weight * b;
-                totalWeight += weight;
-            }
-            return [totalL / totalWeight, totalA / totalWeight, totalB / totalWeight] as Triple;
+        const centroids = allAttemptPoints[attempt];
+        let score = 0;
+        const assignment = data.map(({ oklabColor }) => {
+            const [index, distance] = closestCentroidIndex(centroids, oklabColor);
+            score += distance;
+            return centroids[index];
         });
 
-        const centroidMovements = newCentroids.map(([l0, a0, b0], i) => {
-            const [l1, a1, b1] = centroids[i];
-            return Math.hypot(l1 - l0, a1 - a0, b1 - b0);
-        });
-        allAttemptPoints[attempt] = newCentroids;
-        const maxCentroidMovements = Math.max(...centroidMovements);
-        const absoluteProgress = Math.min(-Math.log10(maxCentroidMovements) / 5, 1);
-        postMessage({ finished: false, progress: absoluteProgress } satisfies KmeansWorkerMessage['out']);
-
-        if (centroidMovements.every((s) => s < 0.00001)) {
-            break;
+        if (score < bestScore) {
+            bestAssignment = assignment;
+            bestScore = score;
         }
     }
 
-    const centroids = allAttemptPoints[attempt];
-    const assignment = data.map(({ oklabColor: [pl, pa, pb] }, i) => {
-        let minDist = Infinity, minCentroidIndex = NaN;
-        for (let i = 0; i < centroids.length; i++) {
-            const [cl, ca, cb] = centroids[i];
-            const distance = Math.hypot(pl - cl, pa - ca, pb - cb);
-            if (distance < minDist) {
-                minCentroidIndex = i;
-                minDist = distance;
-            }
-        }
-
-        return toRgb(...centroids[minCentroidIndex]);
+    postMessage<KmeansWorkerMessage['out']>({
+        finished: true,
+        assignment: bestAssignment.map(oklab => toRgb(...oklab))
     });
-    // }
-
-    postMessage({ finished: true, assignment } satisfies KmeansWorkerMessage['out']);
-    // return assignment;
 };
-
-
 
 function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
     const bits = [1, 2, 0].map(i => Math.floor((totalBits + i) / 3));
@@ -305,7 +337,10 @@ function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
 }
 
 async function main() {
-    const kMeansWorker = convertIntoWorker<KmeansWorkerMessage['in'], KmeansWorkerMessage['out']>(naiveKmeansWorker);
+    const KMeansWorker = FunctionWorker<
+        KmeansWorkerMessage['in'],
+        KmeansWorkerMessage['out']
+    >(naiveKmeansWorker);
 
     const { src, colorCount } = await UI.promptInputSrc();
 
@@ -314,27 +349,26 @@ async function main() {
     const pixelReader = Data.ImageArrayConverter(img1);
 
     const pixels = pixelReader.read(img1);
-    pruneRgbBits(pixels, 12);
+    pruneRgbBits(pixels, 18);
     const { indexArr, colorData } = indexColors(pixels);
 
-    // const result = naiveKmeansQuantizer(colorData, colorCount);
     const progressDisplay = document.createElement('div');
     document.body.appendChild(progressDisplay);
-    const result = await new Promise<Triple[]>((res) => {
-        kMeansWorker.onmessage = ({ data }) => {
-            if (data.finished) {
-                res(data.assignment);
-            } else {
-                progressDisplay.textContent = `Working... (${(data.progress * 100).toFixed(2)}%)`;
-            }
-        };
-        kMeansWorker.postMessage({
+    const result = (await KMeansWorker.run(
+        {
             data: colorData,
             finalCount: colorCount,
             attempts: 8,
             maxIteration: 100
-        });
-    });
+        },
+        (data) => {
+            const loadingBar = '█'
+                .repeat(Math.floor(50 * data.progress))
+                .padEnd(50, '░');
+            progressDisplay.textContent = `Working... [${loadingBar}]`;
+        }
+    )).assignment;
+
     document.body.removeChild(progressDisplay);
     for (let i = 0; i < indexArr.length; i++) {
         const [r, g, b] = result[indexArr[i]];
