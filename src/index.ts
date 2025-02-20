@@ -164,26 +164,39 @@ function indexColors(data: Uint8ClampedArray) {
     return { colorData, indexArr };
 }
 
-function FunctionWorker<InType, OutType extends { finished: boolean; }>(
-    fn: (event: MessageEvent<InType>) => void
+function FunctionWorker<I, O>(
+    fn: (event: I, postProgress: (n: number) => void) => O
 ) {
-    const fnStr = 'self.onmessage=' + fn.toString();
+    const fnStr = `
+    self.onmessage = (ev) => {
+        const progressFn = (n) => { 
+            postMessage({ finished: false, progress: n })
+        };
+        const output = (${fn.toString()})(ev.data, progressFn);
+        postMessage({ finished: true, output });
+    };`;
+
     const fileBlob = new Blob([fnStr], { type: 'text/javascript' });
     const fileUrl = URL.createObjectURL(fileBlob);
 
     const worker = new Worker(fileUrl);
     return {
-        run(
-            arg: InType,
-            onProgress: (data: OutType & { finished: false; }) => void
-        ) {
-            return new Promise<OutType & { finished: true; }>((res) => {
-                const fn = ({ data }: MessageEvent<OutType>) => {
+        run(arg: I, onProgress: (progress: number) => void) {
+            return new Promise<O>((res) => {
+                type EventType = {
+                    finished: true;
+                    output: O;
+                } | {
+                    finished: false;
+                    progress: number;
+                };
+
+                const fn = ({ data }: MessageEvent<EventType>) => {
                     if (data.finished) {
                         worker.removeEventListener('message', fn);
-                        res(data as OutType & { finished: true; });
+                        res(data.output);
                     } else {
-                        onProgress(data as OutType & { finished: false; });
+                        onProgress(data.progress);
                     }
                 };
                 worker.addEventListener('message', fn);
@@ -193,26 +206,15 @@ function FunctionWorker<InType, OutType extends { finished: boolean; }>(
     };
 }
 
-type KmeansWorkerMessage = {
-    in: {
+const naiveKmeans = (
+    { data, finalCount, attempts, maxIteration }: {
         data: ColorData[];
         finalCount: number;
         attempts: number;
         maxIteration: number;
-    };
-    out: {
-        finished: true;
-        assignment: Triple[];
-    } | {
-        finished: false;
-        progress: number;
-    };
-};
-
-
-declare function postMessage<T>(event: T): void;
-
-const naiveKmeansWorker = (event: MessageEvent<KmeansWorkerMessage['in']>) => {
+    },
+    postProgress: (n: number) => void
+) => {
     function toRgb(L: number, A: number, B: number) {
         let l = L + A * +0.3963377774 + B * +0.2158037573;
         let m = L + A * -0.1055613458 + B * -0.0638541728;
@@ -240,7 +242,6 @@ const naiveKmeansWorker = (event: MessageEvent<KmeansWorkerMessage['in']>) => {
         return [minCentroidIndex, minDist] as const;
     }
 
-    const { data, finalCount, attempts, maxIteration } = event.data;
     const shuffleArray = data.map((_, i) => i);
     const allAttemptPoints: Triple[][] = [];
     for (let i = 0; i < attempts; i++) {
@@ -295,10 +296,7 @@ const naiveKmeansWorker = (event: MessageEvent<KmeansWorkerMessage['in']>) => {
                 break;
             }
 
-            postMessage<KmeansWorkerMessage['out']>({
-                finished: false,
-                progress: (attempt + Math.max(bestProgress, iteration / 100)) / attempts
-            });
+            postProgress( (attempt + Math.max(bestProgress, iteration / 100)) / attempts);
         }
 
         const centroids = allAttemptPoints[attempt];
@@ -314,11 +312,7 @@ const naiveKmeansWorker = (event: MessageEvent<KmeansWorkerMessage['in']>) => {
             bestScore = score;
         }
     }
-
-    postMessage<KmeansWorkerMessage['out']>({
-        finished: true,
-        assignment: bestAssignment.map(oklab => toRgb(...oklab))
-    });
+    return bestAssignment.map(oklab => toRgb(...oklab));
 };
 
 function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
@@ -337,10 +331,7 @@ function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
 }
 
 async function main() {
-    const KMeansWorker = FunctionWorker<
-        KmeansWorkerMessage['in'],
-        KmeansWorkerMessage['out']
-    >(naiveKmeansWorker);
+    const KMeansWorker = FunctionWorker(naiveKmeans);
 
     const { src, colorCount } = await UI.promptInputSrc();
 
@@ -361,13 +352,14 @@ async function main() {
             attempts: 8,
             maxIteration: 100
         },
-        (data) => {
+        (progress) => {
             const loadingBar = '█'
-                .repeat(Math.floor(50 * data.progress))
+                .repeat(Math.floor(50 * progress))
                 .padEnd(50, '░');
             progressDisplay.textContent = `Working... [${loadingBar}]`;
         }
-    )).assignment;
+    ));
+
 
     document.body.removeChild(progressDisplay);
     for (let i = 0; i < indexArr.length; i++) {
