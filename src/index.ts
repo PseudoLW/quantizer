@@ -45,6 +45,7 @@ namespace UI {
     export async function promptInputSrc() {
         const imageInput = document.createElement('input');
         imageInput.type = 'file';
+        imageInput.accept = 'image/*';
         document.body.appendChild(imageInput);
 
         await new Promise((res) => { imageInput.addEventListener('change', res); });
@@ -204,10 +205,13 @@ function indexColors(data: Uint8ClampedArray, postProgress: (n: number) => void)
 }
 
 namespace KMeans {
-    export const promptInput = () => {
+    export const promptParameter = () => {
         return new Promise<{ colorCount: number; bitCount: number; }>((res) => {
             const colorInputGroup = UI.createGroup(UI.createInput('number', 'Color count', '8'));
             const colorPruneGroup = UI.createGroup(UI.createInput('number', 'Bit reduction', '12'));
+            colorInputGroup.el.classList.add('input-group');
+            colorPruneGroup.el.classList.add('input-group');
+
             const button = UI.createButton('Quantize!', () => {
                 res({
                     colorCount: colorInputGroup.children[1].valueAsNumber,
@@ -234,7 +238,7 @@ namespace KMeans {
         },
         postProgress: (n: number) => void
     ) => {
-        function toRgb(L: number, A: number, B: number) {
+        function toRgb([L, A, B]: Triple) {
             let l = L + A * +0.3963377774 + B * +0.2158037573;
             let m = L + A * -0.1055613458 + B * -0.0638541728;
             let s = L + A * -0.0894841775 + B * -1.2914855480;
@@ -276,9 +280,9 @@ namespace KMeans {
             allAttemptPoints.push(attemptPoints);
         }
 
-
-        let bestAssignment: Triple[] = [];
         let bestScore = Infinity;
+        let bestAssignment: Triple[] = [];
+        let bestColors: Triple[] = [];
         for (let attempt = 0; attempt < attempts; attempt++) {
             let bestProgress = 0;
             for (let iteration = 0; iteration < maxIteration; iteration++) {
@@ -329,9 +333,13 @@ namespace KMeans {
             if (score < bestScore) {
                 bestAssignment = assignment;
                 bestScore = score;
+                bestColors = centroids;
             }
         }
-        return bestAssignment.map(oklab => toRgb(...oklab));
+        return {
+            assignment: bestAssignment.map(oklab => toRgb(oklab)),
+            colors: bestColors.map(oklab => toRgb(oklab))
+        };
     };
 }
 
@@ -356,21 +364,18 @@ async function main() {
 
     const src = await UI.promptInputSrc();
 
-    const img1 = document.createElement('img');
+    const img1 = new Image();
     await Data.loadImage(img1, src);
     const pixelReader = Data.ImageArrayConverter(img1);
 
     const progressDisplay = document.createElement('div');
     const setProgress = (label: string) => (progress: number) => {
-        const loadingBar = '█'
-            .repeat(Math.floor(50 * progress))
-            .padEnd(50, '░');
+        const loadingBar = '█'.repeat(Math.floor(50 * progress)).padEnd(50, '░');
         progressDisplay.textContent = `${label} [${loadingBar}]`;
     };
     const pixels = pixelReader.read(img1);
+    const parameter = await KMeans.promptParameter();
 
-    const parameter = await KMeans.promptInput();
-    
     pruneRgbBits(pixels, parameter.bitCount);
 
     document.body.appendChild(progressDisplay);
@@ -389,7 +394,7 @@ async function main() {
     document.body.removeChild(progressDisplay);
 
     for (let i = 0; i < indexArr.length; i++) {
-        const [r, g, b] = result[indexArr[i]];
+        const [r, g, b] = result.assignment[indexArr[i]];
         pixels[4 * i + 0] = r;
         pixels[4 * i + 1] = g;
         pixels[4 * i + 2] = b;
@@ -397,7 +402,17 @@ async function main() {
 
     const img2 = document.createElement('img');
     await pixelReader.write(img2, pixels);
-    document.body.appendChild(img2);
+
+    const colDisplay = UI.createGroup(result.colors.map(([r, g, b]) => {
+        const box = document.createElement('div');
+        box.style.background = `rgba(${r}, ${g}, ${b}, 1.0)`;
+        box.classList.add('col-list');
+        return box;
+    }));
+    const imgContainer = UI.createGroup([img2]);
+    imgContainer.el.id = 'picture-container'
+    document.body.appendChild(colDisplay.el);
+    document.body.appendChild(imgContainer.el);
 }
 
 main();
