@@ -204,29 +204,130 @@ function indexColors(data: Uint8ClampedArray, postProgress: (n: number) => void)
     return { colorData, indexArr };
 }
 
-namespace KMeans {
-    export const promptParameter = () => {
-        return new Promise<{ colorCount: number; bitCount: number; }>((res) => {
-            const colorInputGroup = UI.createGroup(UI.createInput('number', 'Color count', '8'));
-            const colorPruneGroup = UI.createGroup(UI.createInput('number', 'Bit reduction', '12'));
-            colorInputGroup.el.classList.add('input-group');
-            colorPruneGroup.el.classList.add('input-group');
+function buildParameterUI(
+    inputs: { label: string; defaultVal: number; }[]
+) {
+    return new Promise<number[]>((res) => {
+        const id = 'inputGroup-' + Math
+            .floor(100000 * Math.random())
+            .toString()
+            .padStart(5, '0');
+        const inputGroups = inputs.map(({ label, defaultVal }, i) => {
+            const inputGroup = UI.createGroup(UI.createInput(
+                'number',
+                label,
+                `${defaultVal}`,
+                id + `-${i}`));
+            inputGroup.el.classList.add('input-group');
+            document.body.appendChild(inputGroup.el);
+            return inputGroup;
+        });
 
-            const button = UI.createButton('Quantize!', () => {
-                res({
-                    colorCount: colorInputGroup.children[1].valueAsNumber,
-                    bitCount: colorPruneGroup.children[1].valueAsNumber
-                });
+        const button = UI.createButton('Quantize!', () => {
+            res(inputGroups.map((g) => g.children[1].valueAsNumber));
+            inputGroups.forEach((g) => document.body.removeChild(g.el));
+            document.body.removeChild(button);
+        });
+        document.body.appendChild(button);
+    });
+}
 
-                document.body.removeChild(colorPruneGroup.el);
-                document.body.removeChild(colorInputGroup.el);
-                document.body.removeChild(button);
+namespace MeanShift {
+    export const promptParameter = async () => {
+        const [radius, bitCount] = await buildParameterUI([
+            { label: 'Radius', defaultVal: 0.05 },
+            { label: 'Bit reduction', defaultVal: 12 },
+        ]);
+        return { radius, bitCount };
+    };
+
+    export const quantize = (
+        { data, radius, maxIteration }: {
+            data: ColorData[];
+            radius: number;
+            maxIteration: number;
+        },
+        postProgress: (n: number) => void
+    ) => {
+        function toRgb([L, A, B]: Triple) {
+            let l = L + A * +0.3963377774 + B * +0.2158037573;
+            let m = L + A * -0.1055613458 + B * -0.0638541728;
+            let s = L + A * -0.0894841775 + B * -1.2914855480;
+            l = l ** 3; m = m ** 3; s = s ** 3;
+            let rr = l * +4.0767416621 + m * -3.3077115913 + s * +0.2309699292;
+            let gg = l * -1.2684380046 + m * +2.6097574011 + s * -0.3413193965;
+            let bb = l * -0.0041960863 + m * -0.7034186147 + s * +1.7076147010;
+            return [rr, gg, bb].map(c => {
+                const c01 = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+                return Math.max(Math.min(Math.round(c01 * 255), 255), 0);
+            }) as Triple;
+        }
+        let currentPoints = data.slice();
+        let bestProgress = 0;
+        for (let i = 0; i < maxIteration; i++) {
+            // TODO: build and use k-d tree
+            const newPoints = currentPoints.map((point) => {
+                const pointSum = [0, 0, 0] as Triple;
+                let totalWeight = 0;
+                for (const otherPoint of currentPoints) {
+                    const [xp, yp, zp] = point.oklabColor;
+                    const [xo, yo, zo] = otherPoint.oklabColor;
+
+                    const distance = Math.hypot(xp - xo, yp - yo, zp - zo);
+                    if (distance < radius) {
+                        const w = otherPoint.count;
+                        totalWeight += w;
+                        pointSum[0] += xo * w;
+                        pointSum[1] += yo * w;
+                        pointSum[2] += zo * w;
+                    }
+                }
+                pointSum[0] /= totalWeight;
+                pointSum[1] /= totalWeight;
+                pointSum[2] /= totalWeight;
+
+                return { oklabColor: pointSum, count: point.count };
             });
 
-            document.body.appendChild(colorInputGroup.el);
-            document.body.appendChild(colorPruneGroup.el);
-            document.body.appendChild(button);
+            let maxMovement = -Infinity;
+            for (let i = 0; i < currentPoints.length; i++) {
+                const [xp, yp, zp] = currentPoints[i].oklabColor;
+                const [xo, yo, zo] = newPoints[i].oklabColor;
+
+                const distance = Math.hypot(xp - xo, yp - yo, zp - zo);
+                if (distance > maxMovement) {
+                    maxMovement = distance;
+                }
+            }
+            const absoluteProgress = Math.min(-Math.log10(maxMovement) / 6, 1);
+            bestProgress = Math.max(absoluteProgress, bestProgress);
+            currentPoints = newPoints;
+
+            if (maxMovement < 0.000001) {
+                break;
+            }
+            postProgress(bestProgress);
+        }
+
+        const colorSet = new Map<number, Triple>();
+        const assignment = currentPoints.map((s) => {
+            const rgb = toRgb(s.oklabColor);
+            const [r, g, b] = rgb;
+            const colorKey = (r << 24) | (g << 12) | (b << 0);
+            colorSet.set(colorKey, rgb);
+            return rgb;
         });
+        return { assignment, colors: Array.from(colorSet.values()) };
+    };
+}
+
+namespace KMeans {
+    export const promptParameter = async () => {
+        const [colorCount, bitCount] = await buildParameterUI([
+            { label: 'Color count', defaultVal: 8 },
+            { label: 'Bit reduction', defaultVal: 12 },
+        ]);
+        return { colorCount, bitCount };
     };
 
     export const quantize = (
@@ -360,7 +461,8 @@ function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
 
 async function main() {
     const IndexerRunner = workerize(indexColors);
-    const kMeansRunner = workerize(KMeans.quantize);
+    // const kMeansRunner = workerize(KMeans.quantize);
+    const meanShiftRunner = workerize(MeanShift.quantize);
 
     const src = await UI.promptInputSrc();
 
@@ -374,7 +476,8 @@ async function main() {
         progressDisplay.textContent = `${label} [${loadingBar}]`;
     };
     const pixels = pixelReader.read(img1);
-    const parameter = await KMeans.promptParameter();
+    // const parameter = await KMeans.promptParameter();
+    const parameter = await MeanShift.promptParameter();
 
     pruneRgbBits(pixels, parameter.bitCount);
 
@@ -383,12 +486,17 @@ async function main() {
         pixels,
         setProgress('Counting colors...')
     );
-    pruneRgbBits(pixels, parameter.colorCount);
+    pruneRgbBits(pixels, parameter.bitCount);
 
-    const result = await kMeansRunner.run({
+    // const result = await kMeansRunner.run({
+    //     data: colorData,
+    //     finalCount: parameter.colorCount,
+    //     attempts: 8,
+    //     maxIteration: 100
+    // }, setProgress('Quantizing...'));
+    const result = await meanShiftRunner.run({
         data: colorData,
-        finalCount: parameter.colorCount,
-        attempts: 8,
+        radius: parameter.radius,
         maxIteration: 100
     }, setProgress('Quantizing...'));
     document.body.removeChild(progressDisplay);
@@ -410,7 +518,7 @@ async function main() {
         return box;
     }));
     const imgContainer = UI.createGroup([img2]);
-    imgContainer.el.id = 'picture-container'
+    imgContainer.el.id = 'picture-container';
     document.body.appendChild(colDisplay.el);
     document.body.appendChild(imgContainer.el);
 }

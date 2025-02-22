@@ -58,20 +58,19 @@
         }
 
         #picture-container {
+            flex: 1;
             display: flex;
-            justify-content: center;
-            /* Center horizontally */
             align-items: center;
-            /* Center vertically */
+            justify-content: center;
+            overflow: hidden;
         }
 
         #picture-container>img {
             max-width: 100%;
-            /* Ensure it doesn't exceed container width */
             max-height: 100%;
-            /* Ensure it doesn't exceed container height */
+            width: auto;
+            height: auto;
             object-fit: contain;
-            /* Preserve aspect ratio while fitting */
         }
     </style>
 </head>
