@@ -3,23 +3,13 @@ type ColorData = { count: number; oklabColor: Triple; };
 type QuantizationParameter = { paramName: string, defaultVal: number; };
 
 namespace UI {
-    export async function promptInputSrc() {
-        const imageInput = document.createElement('input');
-        imageInput.type = 'file';
-        imageInput.accept = 'image/*';
-        document.body.appendChild(imageInput);
-
-        await new Promise((res) => { imageInput.addEventListener('change', res); });
-        document.body.removeChild(imageInput);
-
-        const file = imageInput.files![0];
-        const reader = new FileReader();
-
-        return await new Promise<string>((res) => {
-            reader.addEventListener('load', () => res(reader.result as string));
-            reader.readAsDataURL(file);
-        });
+    export function append(parent: HTMLElement, children: HTMLElement[]) {
+        children.forEach((c) => parent.appendChild(c));
     }
+    export function detach(children: HTMLElement[]) {
+        children.forEach((c) => c.parentElement?.removeChild(c));
+    }
+
     export function createInput(
         inputType: string,
         label: string,
@@ -37,6 +27,7 @@ namespace UI {
 
         return [labelEl, inputEl] as const;
     }
+
     export function createButton(text: string, onClick: () => void) {
         const el = document.createElement('button');
         el.textContent = text;
@@ -52,6 +43,12 @@ namespace UI {
             el,
             children: members
         };
+    }
+
+    export function createTextDiv(text: string) {
+        const el = document.createElement('div');
+        el.textContent = text;
+        return el;
     }
 }
 
@@ -221,83 +218,6 @@ function createQuantizationAlgorithm<const P extends QuantizationParameter[]>(
 
 const ALGORITHMS = [
     createQuantizationAlgorithm(
-        'Mean shift',
-        [{ paramName: 'Radius', defaultVal: 0.05 }],
-        ({ param: [radius], data }, postProgress) => {
-            const maxIteration = 100;
-            function toRgb([L, A, B]: Triple) {
-                let l = L + A * +0.3963377774 + B * +0.2158037573;
-                let m = L + A * -0.1055613458 + B * -0.0638541728;
-                let s = L + A * -0.0894841775 + B * -1.2914855480;
-                l = l ** 3; m = m ** 3; s = s ** 3;
-                let rr = l * +4.0767416621 + m * -3.3077115913 + s * +0.2309699292;
-                let gg = l * -1.2684380046 + m * +2.6097574011 + s * -0.3413193965;
-                let bb = l * -0.0041960863 + m * -0.7034186147 + s * +1.7076147010;
-                return [rr, gg, bb].map(c => {
-                    const c01 = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
-                    return Math.max(Math.min(Math.round(c01 * 255), 255), 0);
-                }) as Triple;
-            }
-            let currentPoints = data.slice();
-            let bestProgress = 0;
-            for (let i = 0; i < maxIteration; i++) {
-                // TODO: build and use k-d tree
-                const newPoints = currentPoints.map((point) => {
-                    const pointSum = [0, 0, 0] as Triple;
-                    let totalWeight = 0;
-                    for (const otherPoint of currentPoints) {
-                        const [xp, yp, zp] = point.oklabColor;
-                        const [xo, yo, zo] = otherPoint.oklabColor;
-
-                        const distance = Math.hypot(xp - xo, yp - yo, zp - zo);
-                        if (distance < radius) {
-                            const w = otherPoint.count;
-                            totalWeight += w;
-                            pointSum[0] += xo * w;
-                            pointSum[1] += yo * w;
-                            pointSum[2] += zo * w;
-                        }
-                    }
-                    pointSum[0] /= totalWeight;
-                    pointSum[1] /= totalWeight;
-                    pointSum[2] /= totalWeight;
-
-                    return { oklabColor: pointSum, count: point.count };
-                });
-
-                let maxMovement = -Infinity;
-                for (let i = 0; i < currentPoints.length; i++) {
-                    const [xp, yp, zp] = currentPoints[i].oklabColor;
-                    const [xo, yo, zo] = newPoints[i].oklabColor;
-
-                    const distance = Math.hypot(xp - xo, yp - yo, zp - zo);
-                    if (distance > maxMovement) {
-                        maxMovement = distance;
-                    }
-                }
-                const absoluteProgress = Math.min(-Math.log10(maxMovement) / 8, 1);
-                bestProgress = Math.max(absoluteProgress, bestProgress);
-                currentPoints = newPoints;
-
-                if (maxMovement < 0.00000001) {
-                    break;
-                }
-                postProgress(bestProgress);
-            }
-
-            const colorSet = new Map<number, Triple>();
-            const assignment = currentPoints.map((s) => {
-                const rgb = toRgb(s.oklabColor);
-                const [r, g, b] = rgb;
-                const colorKey = (r << 24) | (g << 12) | (b << 0);
-                colorSet.set(colorKey, rgb);
-                return rgb;
-            });
-            return { assignment, colors: Array.from(colorSet.values()) };
-        }
-    ),
-
-    createQuantizationAlgorithm(
         'K-Means',
         [{ paramName: 'Color count', defaultVal: 8 }],
         (({ param: [colorCount], data }, postProgress) => {
@@ -405,7 +325,85 @@ const ALGORITHMS = [
                 colors: bestColors.map(oklab => toRgb(oklab))
             };
         })
-    )
+    ),
+
+    createQuantizationAlgorithm(
+        'Mean shift',
+        [{ paramName: 'Radius', defaultVal: 0.05 }],
+        ({ param: [radius], data }, postProgress) => {
+            const maxIteration = 100;
+            function toRgb([L, A, B]: Triple) {
+                let l = L + A * +0.3963377774 + B * +0.2158037573;
+                let m = L + A * -0.1055613458 + B * -0.0638541728;
+                let s = L + A * -0.0894841775 + B * -1.2914855480;
+                l = l ** 3; m = m ** 3; s = s ** 3;
+                let rr = l * +4.0767416621 + m * -3.3077115913 + s * +0.2309699292;
+                let gg = l * -1.2684380046 + m * +2.6097574011 + s * -0.3413193965;
+                let bb = l * -0.0041960863 + m * -0.7034186147 + s * +1.7076147010;
+                return [rr, gg, bb].map(c => {
+                    const c01 = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+                    return Math.max(Math.min(Math.round(c01 * 255), 255), 0);
+                }) as Triple;
+            }
+            let currentPoints = data.slice();
+            let bestProgress = 0;
+            for (let i = 0; i < maxIteration; i++) {
+                // TODO: build and use k-d tree
+                const newPoints = currentPoints.map((point) => {
+                    const pointSum = [0, 0, 0] as Triple;
+                    let totalWeight = 0;
+                    for (const otherPoint of currentPoints) {
+                        const [xp, yp, zp] = point.oklabColor;
+                        const [xo, yo, zo] = otherPoint.oklabColor;
+
+                        const distance = Math.hypot(xp - xo, yp - yo, zp - zo);
+                        if (distance < radius) {
+                            const w = otherPoint.count;
+                            totalWeight += w;
+                            pointSum[0] += xo * w;
+                            pointSum[1] += yo * w;
+                            pointSum[2] += zo * w;
+                        }
+                    }
+                    pointSum[0] /= totalWeight;
+                    pointSum[1] /= totalWeight;
+                    pointSum[2] /= totalWeight;
+
+                    return { oklabColor: pointSum, count: point.count };
+                });
+
+                let maxMovement = -Infinity;
+                for (let i = 0; i < currentPoints.length; i++) {
+                    const [xp, yp, zp] = currentPoints[i].oklabColor;
+                    const [xo, yo, zo] = newPoints[i].oklabColor;
+
+                    const distance = Math.hypot(xp - xo, yp - yo, zp - zo);
+                    if (distance > maxMovement) {
+                        maxMovement = distance;
+                    }
+                }
+                const absoluteProgress = Math.min(-Math.log10(maxMovement) / 8, 1);
+                bestProgress = Math.max(absoluteProgress, bestProgress);
+                currentPoints = newPoints;
+
+                if (maxMovement < 0.00000001) {
+                    break;
+                }
+                postProgress(bestProgress);
+            }
+
+            const colorSet = new Map<number, Triple>();
+            const assignment = currentPoints.map((s) => {
+                const rgb = toRgb(s.oklabColor);
+                const [r, g, b] = rgb;
+                const colorKey = (r << 24) | (g << 12) | (b << 0);
+                colorSet.set(colorKey, rgb);
+                return rgb;
+            });
+            return { assignment, colors: Array.from(colorSet.values()) };
+        }
+    ),
+
 ] as const;
 
 function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
@@ -423,61 +421,100 @@ function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
     }
 }
 
+async function promptInputSrc() {
+    const imageInput = document.createElement('input');
+    const advancedInputLabel = UI.createTextDiv('Advanced settings');
+    const bitCount = UI.createGroup(UI.createInput('number', 'Bit pruning', '12'));
+    bitCount.el.classList.add('input-group');
+
+    imageInput.type = 'file';
+    imageInput.accept = 'image/*';
+    UI.append(document.body, [imageInput, advancedInputLabel, bitCount.el]);
+
+    await new Promise((res) => { imageInput.addEventListener('change', res); });
+    UI.detach([bitCount.el, advancedInputLabel, imageInput]);
+
+    const file = imageInput.files![0];
+    const reader = new FileReader();
+
+    return await new Promise<string>((res) => {
+        reader.addEventListener('load', () => res(reader.result as string));
+        reader.readAsDataURL(file);
+    });
+}
+
 async function main() {
     const IndexerRunner = workerize(indexColors);
-    const algo = ALGORITHMS[1];
 
-    const src = await UI.promptInputSrc();
+    const src = await promptInputSrc();
 
     const img1 = new Image();
     await Data.loadImage(img1, src);
     const pixelReader = Data.ImageArrayConverter(img1);
 
-    const progressDisplay = document.createElement('div');
-    const setProgress = (label: string) => (progress: number) => {
-        const loadingBar = '█'.repeat(Math.floor(50 * progress)).padEnd(50, '░');
-        progressDisplay.textContent = `${label} [${loadingBar}]`;
+    const algoRunner = <T extends QuantizationParameter[]>(
+        algo: ReturnType<typeof createQuantizationAlgorithm<T>>
+    ) => {
+        const run = async () => {
+            const progressDisplay = document.createElement('div');
+            const setProgress = (label: string) => (progress: number) => {
+                const loadingBar = '█'.repeat(Math.floor(50 * progress)).padEnd(50, '░');
+                progressDisplay.textContent = `${label} [${loadingBar}]`;
+            };
+            const pixels = pixelReader.read(img1);
+            const parameter = await algo.promptParameter();
+
+            pruneRgbBits(pixels, 12);
+
+            document.body.appendChild(progressDisplay);
+            const { indexArr, colorData } = await IndexerRunner.run(
+                pixels,
+                setProgress('Counting colors...')
+            );
+
+            const result = await algo.run(
+                colorData,
+                parameter,
+                setProgress('Quantizing...')
+            );
+            document.body.removeChild(progressDisplay);
+
+            for (let i = 0; i < indexArr.length; i++) {
+                const [r, g, b] = result.assignment[indexArr[i]];
+                pixels[4 * i + 0] = r;
+                pixels[4 * i + 1] = g;
+                pixels[4 * i + 2] = b;
+            }
+
+            const img2 = document.createElement('img');
+            await pixelReader.write(img2, pixels);
+
+            const colDisplay = UI.createGroup(result.colors.map(([r, g, b]) => {
+                const box = document.createElement('div');
+                box.style.background = `rgba(${r}, ${g}, ${b}, 1.0)`;
+                box.classList.add('col-list');
+                return box;
+            }));
+            const imgContainer = UI.createGroup([img2]);
+            imgContainer.el.id = 'picture-container';
+            document.body.appendChild(colDisplay.el);
+            document.body.appendChild(imgContainer.el);
+        };
+        return {
+            button: UI.createButton(algo.name, () => { }),
+            run
+        };
     };
-    const pixels = pixelReader.read(img1);
-    const parameter = await algo.promptParameter();
 
-    pruneRgbBits(pixels, 12);
-
-    document.body.appendChild(progressDisplay);
-    const { indexArr, colorData } = await IndexerRunner.run(
-        pixels,
-        setProgress('Counting colors...')
-    );
-
-    const result = await algo.run(
-        colorData,
-        parameter,
-        setProgress('Quantizing...')
-    );
-    document.body.removeChild(progressDisplay);
-
-    for (let i = 0; i < indexArr.length; i++) {
-        const [r, g, b] = result.assignment[indexArr[i]];
-        pixels[4 * i + 0] = r;
-        pixels[4 * i + 1] = g;
-        pixels[4 * i + 2] = b;
-    }
-
-    const img2 = document.createElement('img');
-    await pixelReader.write(img2, pixels);
-
-    const colDisplay = UI.createGroup(result.colors.map(([r, g, b]) => {
-        const box = document.createElement('div');
-        box.style.background = `rgba(${r}, ${g}, ${b}, 1.0)`;
-        box.classList.add('col-list');
-        return box;
-    }));
-    const imgContainer = UI.createGroup([img2]);
-    imgContainer.el.id = 'picture-container';
-    document.body.appendChild(colDisplay.el);
-    document.body.appendChild(imgContainer.el);
-    console.log('wawa');
-
+    const algos = ALGORITHMS.map((a) => algoRunner(a));
+    const algoIndex = await new Promise<number>((res) => {
+        UI.append(document.body, algos.map((s, i) => {
+            s.button.addEventListener('click', () => res(i));
+            return s.button;
+        }));
+    });
+    UI.detach(algos.map((s) => s.button));
+    await algos[algoIndex].run();
 }
 
 main();
