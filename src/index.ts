@@ -1,45 +1,6 @@
 type Triple = [number, number, number];
-
-namespace Algos {
-    export function quickSelect<T>(arr: T[], n: number, compare: (a: T, b: T) => number): T {
-        function partition(arr: T[], low: number, high: number): number {
-            const randomIndex = Math.floor(Math.random() * (high - low + 1)) + low;
-            const pivot = arr[randomIndex];
-            let i = low - 1, j = high + 1;
-
-            while (true) {
-                do i++; while (compare(arr[i], pivot) < 0);
-                do j--; while (compare(arr[j], pivot) > 0);
-                if (i >= j) return j;
-
-                [arr[i], arr[j]] = [arr[j], arr[i]];
-            }
-        }
-
-        function qs(arr: T[], lo: number, hi: number, n: number): T {
-            if (lo === hi) return arr[lo];
-            const pivotIndex = partition(arr, lo, hi);
-
-            if (n <= pivotIndex) {
-                return qs(arr, lo, pivotIndex, n);
-            } else {
-                return qs(arr, pivotIndex + 1, hi, n);
-            }
-        }
-
-        return qs(arr, 0, arr.length - 1, n);
-    }
-
-    type Triple = [number, number, number];
-
-    function bbDistance([px, py, pz]: Triple, [minX, minY, minZ]: Triple, [maxX, maxY, maxZ]: Triple): number {
-        const dx = Math.max(0, Math.max(minX - px, px - maxX));
-        const dy = Math.max(0, Math.max(minY - py, py - maxY));
-        const dz = Math.max(0, Math.max(minZ - pz, pz - maxZ));
-
-        return Math.sqrt(dx * dx + dy * dy + dz * dz);
-    }
-}
+type ColorData = { count: number; oklabColor: Triple; };
+type QuantizationParameter = { paramName: string, defaultVal: number; };
 
 namespace UI {
     export async function promptInputSrc() {
@@ -119,11 +80,6 @@ namespace Data {
         return new Promise((res) => { img.addEventListener('load', res); img.src = src; });
     }
 }
-
-type ColorData = {
-    count: number;
-    oklabColor: Triple;
-};
 
 function workerize<I, O>(
     fn: (event: I, postProgress: (n: number) => void) => O
@@ -205,14 +161,14 @@ function indexColors(data: Uint8ClampedArray, postProgress: (n: number) => void)
 }
 
 function buildParameterUI(
-    inputs: { label: string; defaultVal: number; }[]
+    inputs: { paramName: string; defaultVal: number; }[]
 ) {
     return new Promise<number[]>((res) => {
         const id = 'inputGroup-' + Math
             .floor(100000 * Math.random())
             .toString()
             .padStart(5, '0');
-        const inputGroups = inputs.map(({ label, defaultVal }, i) => {
+        const inputGroups = inputs.map(({ paramName: label, defaultVal }, i) => {
             const inputGroup = UI.createGroup(UI.createInput(
                 'number',
                 label,
@@ -232,217 +188,225 @@ function buildParameterUI(
     });
 }
 
-namespace MeanShift {
-    export const promptParameter = async () => {
-        const [radius, bitCount] = await buildParameterUI([
-            { label: 'Radius', defaultVal: 0.05 },
-            { label: 'Bit reduction', defaultVal: 12 },
-        ]);
-        return { radius, bitCount };
-    };
-
-    export const quantize = (
-        { data, radius, maxIteration }: {
-            data: ColorData[];
-            radius: number;
-            maxIteration: number;
-        },
+function createQuantizationAlgorithm<const P extends QuantizationParameter[]>(
+    name: string,
+    params: P,
+    algorithm: (
+        args: { param: { [key in keyof P]: number }, data: ColorData[]; },
         postProgress: (n: number) => void
     ) => {
-        function toRgb([L, A, B]: Triple) {
-            let l = L + A * +0.3963377774 + B * +0.2158037573;
-            let m = L + A * -0.1055613458 + B * -0.0638541728;
-            let s = L + A * -0.0894841775 + B * -1.2914855480;
-            l = l ** 3; m = m ** 3; s = s ** 3;
-            let rr = l * +4.0767416621 + m * -3.3077115913 + s * +0.2309699292;
-            let gg = l * -1.2684380046 + m * +2.6097574011 + s * -0.3413193965;
-            let bb = l * -0.0041960863 + m * -0.7034186147 + s * +1.7076147010;
-            return [rr, gg, bb].map(c => {
-                const c01 = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
-                return Math.max(Math.min(Math.round(c01 * 255), 255), 0);
-            }) as Triple;
+        assignment: Triple[];
+        colors: Triple[];
+    }
+) {
+    const runner = workerize(algorithm);
+    return {
+        name,
+
+        promptParameter: async () => {
+            return await buildParameterUI(params) as {
+                [key in keyof P]: number
+            };
+        },
+
+        run(
+            data: ColorData[],
+            param: { [key in keyof P]: number },
+            onProgress: (n: number) => void
+        ) {
+            return runner.run({ param, data }, onProgress);
         }
-        let currentPoints = data.slice();
-        let bestProgress = 0;
-        for (let i = 0; i < maxIteration; i++) {
-            // TODO: build and use k-d tree
-            const newPoints = currentPoints.map((point) => {
-                const pointSum = [0, 0, 0] as Triple;
-                let totalWeight = 0;
-                for (const otherPoint of currentPoints) {
-                    const [xp, yp, zp] = point.oklabColor;
-                    const [xo, yo, zo] = otherPoint.oklabColor;
+    };
+};
+
+const ALGORITHMS = [
+    createQuantizationAlgorithm(
+        'Mean shift',
+        [{ paramName: 'Radius', defaultVal: 0.05 }],
+        ({ param: [radius], data }, postProgress) => {
+            const maxIteration = 100;
+            function toRgb([L, A, B]: Triple) {
+                let l = L + A * +0.3963377774 + B * +0.2158037573;
+                let m = L + A * -0.1055613458 + B * -0.0638541728;
+                let s = L + A * -0.0894841775 + B * -1.2914855480;
+                l = l ** 3; m = m ** 3; s = s ** 3;
+                let rr = l * +4.0767416621 + m * -3.3077115913 + s * +0.2309699292;
+                let gg = l * -1.2684380046 + m * +2.6097574011 + s * -0.3413193965;
+                let bb = l * -0.0041960863 + m * -0.7034186147 + s * +1.7076147010;
+                return [rr, gg, bb].map(c => {
+                    const c01 = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+                    return Math.max(Math.min(Math.round(c01 * 255), 255), 0);
+                }) as Triple;
+            }
+            let currentPoints = data.slice();
+            let bestProgress = 0;
+            for (let i = 0; i < maxIteration; i++) {
+                // TODO: build and use k-d tree
+                const newPoints = currentPoints.map((point) => {
+                    const pointSum = [0, 0, 0] as Triple;
+                    let totalWeight = 0;
+                    for (const otherPoint of currentPoints) {
+                        const [xp, yp, zp] = point.oklabColor;
+                        const [xo, yo, zo] = otherPoint.oklabColor;
+
+                        const distance = Math.hypot(xp - xo, yp - yo, zp - zo);
+                        if (distance < radius) {
+                            const w = otherPoint.count;
+                            totalWeight += w;
+                            pointSum[0] += xo * w;
+                            pointSum[1] += yo * w;
+                            pointSum[2] += zo * w;
+                        }
+                    }
+                    pointSum[0] /= totalWeight;
+                    pointSum[1] /= totalWeight;
+                    pointSum[2] /= totalWeight;
+
+                    return { oklabColor: pointSum, count: point.count };
+                });
+
+                let maxMovement = -Infinity;
+                for (let i = 0; i < currentPoints.length; i++) {
+                    const [xp, yp, zp] = currentPoints[i].oklabColor;
+                    const [xo, yo, zo] = newPoints[i].oklabColor;
 
                     const distance = Math.hypot(xp - xo, yp - yo, zp - zo);
-                    if (distance < radius) {
-                        const w = otherPoint.count;
-                        totalWeight += w;
-                        pointSum[0] += xo * w;
-                        pointSum[1] += yo * w;
-                        pointSum[2] += zo * w;
+                    if (distance > maxMovement) {
+                        maxMovement = distance;
                     }
                 }
-                pointSum[0] /= totalWeight;
-                pointSum[1] /= totalWeight;
-                pointSum[2] /= totalWeight;
-
-                return { oklabColor: pointSum, count: point.count };
-            });
-
-            let maxMovement = -Infinity;
-            for (let i = 0; i < currentPoints.length; i++) {
-                const [xp, yp, zp] = currentPoints[i].oklabColor;
-                const [xo, yo, zo] = newPoints[i].oklabColor;
-
-                const distance = Math.hypot(xp - xo, yp - yo, zp - zo);
-                if (distance > maxMovement) {
-                    maxMovement = distance;
-                }
-            }
-            const absoluteProgress = Math.min(-Math.log10(maxMovement) / 6, 1);
-            bestProgress = Math.max(absoluteProgress, bestProgress);
-            currentPoints = newPoints;
-
-            if (maxMovement < 0.000001) {
-                break;
-            }
-            postProgress(bestProgress);
-        }
-
-        const colorSet = new Map<number, Triple>();
-        const assignment = currentPoints.map((s) => {
-            const rgb = toRgb(s.oklabColor);
-            const [r, g, b] = rgb;
-            const colorKey = (r << 24) | (g << 12) | (b << 0);
-            colorSet.set(colorKey, rgb);
-            return rgb;
-        });
-        return { assignment, colors: Array.from(colorSet.values()) };
-    };
-}
-
-namespace KMeans {
-    export const promptParameter = async () => {
-        const [colorCount, bitCount] = await buildParameterUI([
-            { label: 'Color count', defaultVal: 8 },
-            { label: 'Bit reduction', defaultVal: 12 },
-        ]);
-        return { colorCount, bitCount };
-    };
-
-    export const quantize = (
-        { data, finalCount, attempts, maxIteration }: {
-            data: ColorData[];
-            finalCount: number;
-            attempts: number;
-            maxIteration: number;
-        },
-        postProgress: (n: number) => void
-    ) => {
-        function toRgb([L, A, B]: Triple) {
-            let l = L + A * +0.3963377774 + B * +0.2158037573;
-            let m = L + A * -0.1055613458 + B * -0.0638541728;
-            let s = L + A * -0.0894841775 + B * -1.2914855480;
-            l = l ** 3; m = m ** 3; s = s ** 3;
-            let rr = l * +4.0767416621 + m * -3.3077115913 + s * +0.2309699292;
-            let gg = l * -1.2684380046 + m * +2.6097574011 + s * -0.3413193965;
-            let bb = l * -0.0041960863 + m * -0.7034186147 + s * +1.7076147010;
-            return [rr, gg, bb].map(c => {
-                const c01 = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
-                return Math.max(Math.min(Math.round(c01 * 255), 255), 0);
-            }) as Triple;
-        }
-
-        function closestCentroidIndex(centroids: Triple[], [pl, pa, pb]: Triple) {
-            let minDist = Infinity, minCentroidIndex = NaN;
-            for (let i = 0; i < centroids.length; i++) {
-                const [cl, ca, cb] = centroids[i];
-                const distance = Math.hypot(pl - cl, pa - ca, pb - cb);
-                if (distance < minDist) {
-                    minCentroidIndex = i;
-                    minDist = distance;
-                }
-            }
-            return [minCentroidIndex, minDist] as const;
-        }
-
-        const shuffleArray = data.map((_, i) => i);
-        const allAttemptPoints: Triple[][] = [];
-        for (let i = 0; i < attempts; i++) {
-            // Partial Fisher-Yates
-            const n = shuffleArray.length;
-            const attemptPoints: Triple[] = [];
-            for (let ii = 0; ii < finalCount; ii++) {
-                const swapIndex = Math.floor(Math.random() * (n - ii));
-                const targetIndex = n - ii - 1;
-                [shuffleArray[swapIndex], shuffleArray[targetIndex]] = [shuffleArray[targetIndex], shuffleArray[swapIndex]];
-                attemptPoints.push(data[shuffleArray[targetIndex]].oklabColor);
-            }
-            allAttemptPoints.push(attemptPoints);
-        }
-
-        let bestScore = Infinity;
-        let bestAssignment: Triple[] = [];
-        let bestColors: Triple[] = [];
-        for (let attempt = 0; attempt < attempts; attempt++) {
-            let bestProgress = 0;
-            for (let iteration = 0; iteration < maxIteration; iteration++) {
-                const centroids = allAttemptPoints[attempt].slice();
-
-                const centroidAssignedPoints = centroids.map(() => [] as ColorData[]);
-                for (const color of data) {
-                    const [index] = closestCentroidIndex(centroids, color.oklabColor);
-                    centroidAssignedPoints[index].push(color);
-                }
-
-                const newCentroids = centroidAssignedPoints.map((points) => {
-                    let totalL = 0, totalA = 0, totalB = 0;
-                    let totalWeight = 0;
-                    for (const { oklabColor: [l, a, b], count: weight } of points) {
-                        totalL += weight * l;
-                        totalA += weight * a;
-                        totalB += weight * b;
-                        totalWeight += weight;
-                    }
-                    return [totalL / totalWeight, totalA / totalWeight, totalB / totalWeight] as Triple;
-                });
-
-                const centroidMovements = newCentroids.map(([l0, a0, b0], i) => {
-                    const [l1, a1, b1] = centroids[i];
-                    return Math.hypot(l1 - l0, a1 - a0, b1 - b0);
-                });
-                allAttemptPoints[attempt] = newCentroids;
-                const maxCentroidMovements = Math.max(...centroidMovements);
-                const absoluteProgress = Math.min(-Math.log10(maxCentroidMovements) / 5, 1);
+                const absoluteProgress = Math.min(-Math.log10(maxMovement) / 8, 1);
                 bestProgress = Math.max(absoluteProgress, bestProgress);
+                currentPoints = newPoints;
 
-                if (centroidMovements.every((s) => s < 0.00001)) {
+                if (maxMovement < 0.00000001) {
                     break;
                 }
-
-                postProgress((attempt + Math.max(bestProgress, iteration / 100)) / attempts);
+                postProgress(bestProgress);
             }
 
-            const centroids = allAttemptPoints[attempt];
-            let score = 0;
-            const assignment = data.map(({ oklabColor }) => {
-                const [index, distance] = closestCentroidIndex(centroids, oklabColor);
-                score += distance;
-                return centroids[index];
+            const colorSet = new Map<number, Triple>();
+            const assignment = currentPoints.map((s) => {
+                const rgb = toRgb(s.oklabColor);
+                const [r, g, b] = rgb;
+                const colorKey = (r << 24) | (g << 12) | (b << 0);
+                colorSet.set(colorKey, rgb);
+                return rgb;
             });
-
-            if (score < bestScore) {
-                bestAssignment = assignment;
-                bestScore = score;
-                bestColors = centroids;
-            }
+            return { assignment, colors: Array.from(colorSet.values()) };
         }
-        return {
-            assignment: bestAssignment.map(oklab => toRgb(oklab)),
-            colors: bestColors.map(oklab => toRgb(oklab))
-        };
-    };
-}
+    ),
+
+    createQuantizationAlgorithm(
+        'K-Means',
+        [{ paramName: 'Color count', defaultVal: 8 }],
+        (({ param: [colorCount], data }, postProgress) => {
+            const attempts = 8, maxIteration = 100;
+            function toRgb([L, A, B]: Triple) {
+                let l = L + A * +0.3963377774 + B * +0.2158037573;
+                let m = L + A * -0.1055613458 + B * -0.0638541728;
+                let s = L + A * -0.0894841775 + B * -1.2914855480;
+                l = l ** 3; m = m ** 3; s = s ** 3;
+                let rr = l * +4.0767416621 + m * -3.3077115913 + s * +0.2309699292;
+                let gg = l * -1.2684380046 + m * +2.6097574011 + s * -0.3413193965;
+                let bb = l * -0.0041960863 + m * -0.7034186147 + s * +1.7076147010;
+                return [rr, gg, bb].map(c => {
+                    const c01 = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+                    return Math.max(Math.min(Math.round(c01 * 255), 255), 0);
+                }) as Triple;
+            }
+
+            function closestCentroidIndex(centroids: Triple[], [pl, pa, pb]: Triple) {
+                let minDist = Infinity, minCentroidIndex = NaN;
+                for (let i = 0; i < centroids.length; i++) {
+                    const [cl, ca, cb] = centroids[i];
+                    const distance = Math.hypot(pl - cl, pa - ca, pb - cb);
+                    if (distance < minDist) {
+                        minCentroidIndex = i;
+                        minDist = distance;
+                    }
+                }
+                return [minCentroidIndex, minDist] as const;
+            }
+
+            const shuffleArray = data.map((_, i) => i);
+            const allAttemptPoints: Triple[][] = [];
+            for (let i = 0; i < attempts; i++) {
+                // Partial Fisher-Yates
+                const n = shuffleArray.length;
+                const attemptPoints: Triple[] = [];
+                for (let ii = 0; ii < colorCount; ii++) {
+                    const swapIndex = Math.floor(Math.random() * (n - ii));
+                    const targetIndex = n - ii - 1;
+                    [shuffleArray[swapIndex], shuffleArray[targetIndex]] = [shuffleArray[targetIndex], shuffleArray[swapIndex]];
+                    attemptPoints.push(data[shuffleArray[targetIndex]].oklabColor);
+                }
+                allAttemptPoints.push(attemptPoints);
+            }
+
+            let bestScore = Infinity;
+            let bestAssignment: Triple[] = [];
+            let bestColors: Triple[] = [];
+            for (let attempt = 0; attempt < attempts; attempt++) {
+                let bestProgress = 0;
+                for (let iteration = 0; iteration < maxIteration; iteration++) {
+                    const centroids = allAttemptPoints[attempt].slice();
+
+                    const centroidAssignedPoints = centroids.map(() => [] as ColorData[]);
+                    for (const color of data) {
+                        const [index] = closestCentroidIndex(centroids, color.oklabColor);
+                        centroidAssignedPoints[index].push(color);
+                    }
+
+                    const newCentroids = centroidAssignedPoints.map((points) => {
+                        let totalL = 0, totalA = 0, totalB = 0;
+                        let totalWeight = 0;
+                        for (const { oklabColor: [l, a, b], count: weight } of points) {
+                            totalL += weight * l;
+                            totalA += weight * a;
+                            totalB += weight * b;
+                            totalWeight += weight;
+                        }
+                        return [totalL / totalWeight, totalA / totalWeight, totalB / totalWeight] as Triple;
+                    });
+
+                    const centroidMovements = newCentroids.map(([l0, a0, b0], i) => {
+                        const [l1, a1, b1] = centroids[i];
+                        return Math.hypot(l1 - l0, a1 - a0, b1 - b0);
+                    });
+                    allAttemptPoints[attempt] = newCentroids;
+                    const maxCentroidMovements = Math.max(...centroidMovements);
+                    const absoluteProgress = Math.min(-Math.log10(maxCentroidMovements) / 5, 1);
+                    bestProgress = Math.max(absoluteProgress, bestProgress);
+
+                    if (centroidMovements.every((s) => s < 0.00001)) {
+                        break;
+                    }
+
+                    postProgress((attempt + Math.max(bestProgress, iteration / 100)) / attempts);
+                }
+
+                const centroids = allAttemptPoints[attempt];
+                let score = 0;
+                const assignment = data.map(({ oklabColor }) => {
+                    const [index, distance] = closestCentroidIndex(centroids, oklabColor);
+                    score += distance;
+                    return centroids[index];
+                });
+
+                if (score < bestScore) {
+                    bestAssignment = assignment;
+                    bestScore = score;
+                    bestColors = centroids;
+                }
+            }
+            return {
+                assignment: bestAssignment.map(oklab => toRgb(oklab)),
+                colors: bestColors.map(oklab => toRgb(oklab))
+            };
+        })
+    )
+] as const;
 
 function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
     const bits = [1, 2, 0].map(i => Math.floor((totalBits + i) / 3));
@@ -461,8 +425,7 @@ function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
 
 async function main() {
     const IndexerRunner = workerize(indexColors);
-    // const kMeansRunner = workerize(KMeans.quantize);
-    const meanShiftRunner = workerize(MeanShift.quantize);
+    const algo = ALGORITHMS[1];
 
     const src = await UI.promptInputSrc();
 
@@ -476,29 +439,21 @@ async function main() {
         progressDisplay.textContent = `${label} [${loadingBar}]`;
     };
     const pixels = pixelReader.read(img1);
-    // const parameter = await KMeans.promptParameter();
-    const parameter = await MeanShift.promptParameter();
+    const parameter = await algo.promptParameter();
 
-    pruneRgbBits(pixels, parameter.bitCount);
+    pruneRgbBits(pixels, 12);
 
     document.body.appendChild(progressDisplay);
     const { indexArr, colorData } = await IndexerRunner.run(
         pixels,
         setProgress('Counting colors...')
     );
-    pruneRgbBits(pixels, parameter.bitCount);
 
-    // const result = await kMeansRunner.run({
-    //     data: colorData,
-    //     finalCount: parameter.colorCount,
-    //     attempts: 8,
-    //     maxIteration: 100
-    // }, setProgress('Quantizing...'));
-    const result = await meanShiftRunner.run({
-        data: colorData,
-        radius: parameter.radius,
-        maxIteration: 100
-    }, setProgress('Quantizing...'));
+    const result = await algo.run(
+        colorData,
+        parameter,
+        setProgress('Quantizing...')
+    );
     document.body.removeChild(progressDisplay);
 
     for (let i = 0; i < indexArr.length; i++) {
@@ -521,6 +476,8 @@ async function main() {
     imgContainer.el.id = 'picture-container';
     document.body.appendChild(colDisplay.el);
     document.body.appendChild(imgContainer.el);
+    console.log('wawa');
+
 }
 
 main();
