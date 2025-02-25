@@ -28,10 +28,12 @@ namespace UI {
         return [labelEl, inputEl] as const;
     }
 
-    export function createButton(text: string, onClick: () => void) {
+    export function createButton(text: string, onClick?: () => void | undefined) {
         const el = document.createElement('button');
         el.textContent = text;
-        el.addEventListener('click', onClick);
+        if (onClick) {
+            el.addEventListener('click', onClick);
+        }
         return el;
     }
 
@@ -53,18 +55,20 @@ namespace UI {
 }
 
 namespace Data {
-    export function ImageArrayConverter({ width, height }: { width: number, height: number; }) {
-        const canvas = new OffscreenCanvas(width, height);
+    export function ImageArrayConverter() {
+        const canvas = new OffscreenCanvas(0, 0);
         const ctx = canvas.getContext('2d')!;
 
         return {
             read(image: HTMLImageElement) {
+                canvas.width = image.width;
+                canvas.height = image.height;
                 ctx.drawImage(image, 0, 0);
-                return ctx.getImageData(0, 0, width, height).data;
+                return ctx.getImageData(0, 0, image.width, image.height).data;
             },
 
             async write(image: HTMLImageElement, pixels: Uint8ClampedArray) {
-                const imgDataObj = new ImageData(pixels, width, height);
+                const imgDataObj = new ImageData(pixels, canvas.width, canvas.height);
                 ctx.putImageData(imgDataObj, 0, 0);
                 const blob = await canvas.convertToBlob();
                 const url = URL.createObjectURL(blob);
@@ -483,53 +487,50 @@ function createProgressDisplay() {
     };
 }
 
-
-async function main() {
+const createApp = () => {
     const IndexerRunner = workerize(indexColors);
-
-    const { src, pruneBitCount } = await promptInputSrc();
     const progressDisplay = createProgressDisplay();
+    const pixelReader = Data.ImageArrayConverter();
 
-    progressDisplay
-        .append(document.body)
-        .setLabel('Loading image')
-        .set(0);
-
-    const img1 = new Image();
-    await Data.loadImage(img1, src);
-    const pixelReader = Data.ImageArrayConverter(img1);
-    const pixels = pixelReader.read(img1);
-    pruneRgbBits(pixels, pruneBitCount);
-
-    progressDisplay.setLabel('Counting colors');
-    const { indexArr, colorData } = await IndexerRunner.run(pixels, progressDisplay.set);
-    progressDisplay.detach();
-
-    const algoRunner = <T extends QuantizationParameter[]>(
-        algo: ReturnType<typeof createQuantizationAlgorithm<T>>
-    ) => {
-        const run = async () => {
-            const parameter = await algo.promptParameter();
+    type UploadImageResult = { pixels: Uint8ClampedArray; colorData: ColorData[]; indexArr: number[]; };
+    const App = {
+        progressDisplay,
+        pixelReader,
+        async uploadImage(): Promise<UploadImageResult> {
+            const { src, pruneBitCount } = await promptInputSrc();
             progressDisplay
                 .append(document.body)
-                .setLabel('Quantizing');
-            const result = await algo.run(colorData, parameter, progressDisplay.set);
-            console.log(result);
+                .setLabel('Loading image')
+                .set(0);
+            const inputImage = new Image();
+            await Data.loadImage(inputImage, src);
+            const pixels = pixelReader.read(inputImage);
+            pruneRgbBits(pixels, pruneBitCount);
 
+            progressDisplay.setLabel('Counting colors');
+            const indexerOutput = await IndexerRunner.run(pixels, progressDisplay.set);
             progressDisplay.detach();
 
+            return { pixels, ...indexerOutput };
+        },
+
+        async displayPicture(
+            result: { assignment: Triple[], colors: Triple[]; },
+            pixels: Uint8ClampedArray,
+            indexArr: number[],
+
+            colorData: ColorData[]
+        ) {
             for (let i = 0; i < indexArr.length; i++) {
                 const colIndex = indexArr[i];
                 if (colIndex !== -1) {
                     const [r, g, b] = result.assignment[indexArr[i]];
-                    pixels[4 * i + 0] = r;
-                    pixels[4 * i + 1] = g;
-                    pixels[4 * i + 2] = b;
+                    pixels[4 * i + 0] = r; pixels[4 * i + 1] = g; pixels[4 * i + 2] = b;
                 }
             }
 
             const img2 = document.createElement('img');
-            await pixelReader.write(img2, pixels);
+            await App.pixelReader.write(img2, pixels);
 
             const colDisplay = UI.createGroup(result.colors.map(([r, g, b]) => {
                 const box = document.createElement('div');
@@ -540,24 +541,58 @@ async function main() {
 
             const imgContainer = UI.createGroup([img2]);
             imgContainer.el.id = 'picture-container';
-            document.body.appendChild(colDisplay.el);
-            document.body.appendChild(imgContainer.el);
-        };
-        return {
-            button: UI.createButton(algo.name, () => { }),
-            run
-        };
+            const retryButton = UI.createButton('Retry with the same picture');
+            const changePicButton = UI.createButton('Upload another picture');
+            const currentElements = [colDisplay.el, imgContainer.el, retryButton, changePicButton];
+            UI.append(document.body, currentElements);
+
+            retryButton.addEventListener('click', () => {
+                UI.detach(currentElements);
+                App.promptAndRunAlgorithm({ colorData, pixels, indexArr });
+            });
+            changePicButton.addEventListener('click', () => {
+                UI.detach(currentElements);
+                App.run();
+            });
+        },
+
+        async promptAndRunAlgorithm(arg: UploadImageResult) {
+            const fn = <T extends QuantizationParameter[]>(algo: ReturnType<typeof createQuantizationAlgorithm<T>>) => {
+                const { colorData, indexArr, pixels } = arg;
+                const run = async () => {
+                    const parameter = await algo.promptParameter();
+                    progressDisplay
+                        .append(document.body)
+                        .setLabel('Quantizing');
+                    const result = await algo.run(colorData, parameter, progressDisplay.set);
+
+                    progressDisplay.detach();
+                    await App.displayPicture(result, pixels, indexArr, colorData);
+                };
+
+                return {
+                    button: UI.createButton(algo.name),
+                    run
+                };
+            };
+            const algos = ALGORITHMS.map(fn);
+            const algoIndex = await new Promise<number>((res) => {
+                UI.append(document.body, algos.map((s, i) => {
+                    s.button.addEventListener('click', () => res(i));
+                    return s.button;
+                }));
+            });
+
+            algos.forEach((a) => document.body.removeChild(a.button));
+            await algos[algoIndex].run();
+        },
+
+        async run() {
+            const out = await App.uploadImage();
+            await App.promptAndRunAlgorithm(out);
+        }
     };
+    return App;
+};
 
-    const algos = ALGORITHMS.map((a) => algoRunner(a));
-    const algoIndex = await new Promise<number>((res) => {
-        UI.append(document.body, algos.map((s, i) => {
-            s.button.addEventListener('click', () => res(i));
-            return s.button;
-        }));
-    });
-    UI.detach(algos.map((s) => s.button));
-    await algos[algoIndex].run();
-}
-
-main();
+createApp().run();
