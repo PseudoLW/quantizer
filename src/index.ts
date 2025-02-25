@@ -217,8 +217,7 @@ function createQuantizationAlgorithm<const P extends QuantizationParameter[]>(
 };
 
 const ALGORITHMS = [
-    createQuantizationAlgorithm(
-        'K-Means',
+    createQuantizationAlgorithm('K-Means',
         [{ paramName: 'Color count', defaultVal: 8 }],
         (({ param: [colorCount], data }, postProgress) => {
             const attempts = 8, maxIteration = 100;
@@ -236,17 +235,21 @@ const ALGORITHMS = [
                 }) as Triple;
             }
 
-            function closestCentroidIndex(centroids: Triple[], [pl, pa, pb]: Triple) {
-                let minDist = Infinity, minCentroidIndex = NaN;
+            function squaredDistance([ax, ay, az]: Triple, [bx, by, bz]: Triple) {
+                const dx = ax - bx, dy = ay - by, dz = az - bz;
+                return dx * dx + dy * dy + dz * dz;
+            }
+
+            function closestCentroidIndex(centroids: Triple[], p: Triple) {
+                let minSquaredDist = Infinity, minCentroidIndex = NaN;
                 for (let i = 0; i < centroids.length; i++) {
-                    const [cl, ca, cb] = centroids[i];
-                    const distance = Math.hypot(pl - cl, pa - ca, pb - cb);
-                    if (distance < minDist) {
+                    const d = squaredDistance(p, centroids[i]);
+                    if (d < minSquaredDist) {
                         minCentroidIndex = i;
-                        minDist = distance;
+                        minSquaredDist = d;
                     }
                 }
-                return [minCentroidIndex, minDist] as const;
+                return [minCentroidIndex, minSquaredDist] as const;
             }
 
             const shuffleArray = data.map((_, i) => i);
@@ -290,18 +293,15 @@ const ALGORITHMS = [
                         return [totalL / totalWeight, totalA / totalWeight, totalB / totalWeight] as Triple;
                     });
 
-                    const centroidMovements = newCentroids.map(([l0, a0, b0], i) => {
-                        const [l1, a1, b1] = centroids[i];
-                        return Math.hypot(l1 - l0, a1 - a0, b1 - b0);
-                    });
-                    allAttemptPoints[attempt] = newCentroids;
-                    const maxCentroidMovements = Math.max(...centroidMovements);
-                    const absoluteProgress = Math.min(-Math.log10(maxCentroidMovements) / 5, 1);
-                    bestProgress = Math.max(absoluteProgress, bestProgress);
-
-                    if (centroidMovements.every((s) => s < 0.00001)) {
-                        break;
+                    let maxCentroidMovement = -Infinity;
+                    for (let i = 0; i < newCentroids.length; i++) {
+                        maxCentroidMovement = Math.max(
+                            maxCentroidMovement, squaredDistance(centroids[i], newCentroids[i]));
                     }
+
+                    const absoluteProgress = Math.min(-Math.log10(maxCentroidMovement) / 5, 1);
+                    bestProgress = Math.max(absoluteProgress, bestProgress);
+                    if (maxCentroidMovement < 0.00001) { break; }
 
                     postProgress((attempt + Math.max(bestProgress, iteration / 100)) / attempts);
                 }
@@ -309,8 +309,8 @@ const ALGORITHMS = [
                 const centroids = allAttemptPoints[attempt];
                 let score = 0;
                 const assignment = data.map(({ oklabColor }) => {
-                    const [index, distance] = closestCentroidIndex(centroids, oklabColor);
-                    score += distance;
+                    const [index, squaredDistance] = closestCentroidIndex(centroids, oklabColor);
+                    score += squaredDistance;
                     return centroids[index];
                 });
 
@@ -327,8 +327,7 @@ const ALGORITHMS = [
         })
     ),
 
-    createQuantizationAlgorithm(
-        'Mean shift',
+    createQuantizationAlgorithm('Mean shift',
         [{ paramName: 'Radius', defaultVal: 0.05 }],
         ({ param: [radius], data }, postProgress) => {
             const maxIteration = 100;
@@ -437,47 +436,52 @@ async function promptInputSrc() {
     const file = imageInput.files![0];
     const reader = new FileReader();
 
-    return await new Promise<string>((res) => {
+    const src = await new Promise<string>((res) => {
         reader.addEventListener('load', () => res(reader.result as string));
         reader.readAsDataURL(file);
     });
+    return { src, pruneBitCount: bitCount.children[1].valueAsNumber };
 }
+
+function createProgressDisplay() {
+    const el = document.createElement('div');
+    let label = '';
+    const set = (progress: number) => {
+        const loadingBar = '█'.repeat(Math.floor(50 * progress)).padEnd(50, '░');
+        el.textContent = `${label} [${loadingBar}]`;
+    };
+
+    return { el, set, set label(l: string) { label = l; } };
+}
+
 
 async function main() {
     const IndexerRunner = workerize(indexColors);
 
-    const src = await promptInputSrc();
+    const { src, pruneBitCount } = await promptInputSrc();
 
     const img1 = new Image();
     await Data.loadImage(img1, src);
     const pixelReader = Data.ImageArrayConverter(img1);
+    const progressDisplay = createProgressDisplay();
 
     const algoRunner = <T extends QuantizationParameter[]>(
         algo: ReturnType<typeof createQuantizationAlgorithm<T>>
     ) => {
         const run = async () => {
-            const progressDisplay = document.createElement('div');
-            const setProgress = (label: string) => (progress: number) => {
-                const loadingBar = '█'.repeat(Math.floor(50 * progress)).padEnd(50, '░');
-                progressDisplay.textContent = `${label} [${loadingBar}]`;
-            };
+
             const pixels = pixelReader.read(img1);
             const parameter = await algo.promptParameter();
 
-            pruneRgbBits(pixels, 12);
+            pruneRgbBits(pixels, pruneBitCount);
 
-            document.body.appendChild(progressDisplay);
-            const { indexArr, colorData } = await IndexerRunner.run(
-                pixels,
-                setProgress('Counting colors...')
-            );
+            document.body.appendChild(progressDisplay.el);
+            progressDisplay.label = 'Counting colors';
+            const { indexArr, colorData } = await IndexerRunner.run(pixels, progressDisplay.set);
 
-            const result = await algo.run(
-                colorData,
-                parameter,
-                setProgress('Quantizing...')
-            );
-            document.body.removeChild(progressDisplay);
+            progressDisplay.label = 'Quantizing';
+            const result = await algo.run(colorData, parameter, progressDisplay.set);
+            document.body.removeChild(progressDisplay.el);
 
             for (let i = 0; i < indexArr.length; i++) {
                 const [r, g, b] = result.assignment[indexArr[i]];
