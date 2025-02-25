@@ -226,12 +226,15 @@ function createQuantizationAlgorithm<const P extends QuantizationParameter[]>(
 
 const ALGORITHMS = [
     createQuantizationAlgorithm('K-Means',
-        [{ paramName: 'Color count', defaultVal: 8 }],
-        (({ param: [colorCount], data }, postProgress) => {
+        [
+            { paramName: 'Color count', defaultVal: 8 },
+            { paramName: 'Attempts', defaultVal: 8 },
+        ],
+        (({ param: [colorCount, attempts], data }, postProgress) => {
             if (colorCount > data.length) {
                 colorCount = data.length;
             }
-            const attempts = 8, maxIteration = 100;
+            const maxIteration = 100;
             function toRgb([L, A, B]: Triple) {
                 let l = L + A * +0.3963377774 + B * +0.2158037573;
                 let m = L + A * -0.1055613458 + B * -0.0638541728;
