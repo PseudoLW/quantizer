@@ -73,6 +73,33 @@
             height: auto;
             object-fit: contain;
         }
+
+        .progress-bar {
+            height: 25px;
+            position: relative;
+        }
+
+        .progress-bar>* {
+            position: absolute;
+            left: 0;
+            right: 0;
+            height: 100%;
+            width: 100%;
+        }
+
+        .progress-bar>label {
+            line-height: 25px;
+            text-align: center;
+        }
+
+        progress::-moz-progress-bar,
+        progress::-webkit-progress-value {
+            background: skyblue;
+        }
+
+        .progress-bar>progress {
+            border: 1px solid black;
+        }
     </style>
 </head>
 

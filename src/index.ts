@@ -445,13 +445,32 @@ async function promptInputSrc() {
 
 function createProgressDisplay() {
     const el = document.createElement('div');
+    const progEl = document.createElement('progress');
+    const labelEl = document.createElement('label');
+    el.classList.add('progress-bar');
+    UI.append(el, [progEl, labelEl]);
     let label = '';
     const set = (progress: number) => {
-        const loadingBar = '█'.repeat(Math.floor(50 * progress)).padEnd(50, '░');
-        el.textContent = `${label} [${loadingBar}]`;
+        progEl.value = progress;
+
+        labelEl.textContent = `${label} [${(progress * 100).toFixed(0)}%]`;
     };
 
-    return { el, set, set label(l: string) { label = l; } };
+    return {
+        el, set,
+        setLabel(l: string) {
+            label = l;
+            return this;
+        },
+        append(parent: HTMLElement) {
+            parent.appendChild(el);
+            return this;
+        },
+        detach() {
+            el.parentElement?.removeChild(el);
+            return this;
+        }
+    };
 }
 
 
@@ -459,29 +478,35 @@ async function main() {
     const IndexerRunner = workerize(indexColors);
 
     const { src, pruneBitCount } = await promptInputSrc();
+    const progressDisplay = createProgressDisplay();
+
+    progressDisplay
+        .append(document.body)
+        .setLabel('Loading image')
+        .set(0);
 
     const img1 = new Image();
     await Data.loadImage(img1, src);
     const pixelReader = Data.ImageArrayConverter(img1);
-    const progressDisplay = createProgressDisplay();
+
+    const pixels = pixelReader.read(img1);
+    pruneRgbBits(pixels, pruneBitCount);
+
+    progressDisplay.setLabel('Counting colors');
+    const { indexArr, colorData } = await IndexerRunner.run(pixels, progressDisplay.set);
+    
+    progressDisplay.detach();
 
     const algoRunner = <T extends QuantizationParameter[]>(
         algo: ReturnType<typeof createQuantizationAlgorithm<T>>
     ) => {
         const run = async () => {
-
-            const pixels = pixelReader.read(img1);
             const parameter = await algo.promptParameter();
-
-            pruneRgbBits(pixels, pruneBitCount);
-
-            document.body.appendChild(progressDisplay.el);
-            progressDisplay.label = 'Counting colors';
-            const { indexArr, colorData } = await IndexerRunner.run(pixels, progressDisplay.set);
-
-            progressDisplay.label = 'Quantizing';
+            progressDisplay
+                .append(document.body)
+                .setLabel('Quantizing');
             const result = await algo.run(colorData, parameter, progressDisplay.set);
-            document.body.removeChild(progressDisplay.el);
+            progressDisplay.detach();
 
             for (let i = 0; i < indexArr.length; i++) {
                 const [r, g, b] = result.assignment[indexArr[i]];
