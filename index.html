@@ -64,7 +64,12 @@
             height: 25px;
             border: 1px solid black;
         }
-
+        .col-list:not(:first-child) {
+            border-left: none;
+        }
+        .col-list:not(:last-child) {
+            border-right: none;
+        }
         #picture-container {
             flex: 1 0 0;
             display: flex;

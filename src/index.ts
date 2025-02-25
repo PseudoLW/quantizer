@@ -137,6 +137,10 @@ function indexColors(data: Uint8ClampedArray, postProgress: (n: number) => void)
     let lastProgressPercent = 0;
     for (let i = 0; i < data.length; i += 4) {
         const [r, g, b, a] = data.slice(i, i + 4);
+        if (a === 0) {
+            indexArr[i / 4] = -1;
+            continue;
+        }
         const colorKey = (r << 24) | (g << 12) | (b << 0);
         let colorIndex = colorCodeToIndex.get(colorKey);
         if (colorIndex === undefined) {
@@ -220,6 +224,9 @@ const ALGORITHMS = [
     createQuantizationAlgorithm('K-Means',
         [{ paramName: 'Color count', defaultVal: 8 }],
         (({ param: [colorCount], data }, postProgress) => {
+            if (colorCount > data.length) {
+                colorCount = data.length;
+            }
             const attempts = 8, maxIteration = 100;
             function toRgb([L, A, B]: Triple) {
                 let l = L + A * +0.3963377774 + B * +0.2158037573;
@@ -328,7 +335,7 @@ const ALGORITHMS = [
     ),
 
     createQuantizationAlgorithm('Mean shift',
-        [{ paramName: 'Radius', defaultVal: 0.05 }],
+        [{ paramName: 'Radius', defaultVal: 0.07 }],
         ({ param: [radius], data }, postProgress) => {
             const maxIteration = 100;
             function toRgb([L, A, B]: Triple) {
@@ -347,7 +354,6 @@ const ALGORITHMS = [
             let currentPoints = data.slice();
             let bestProgress = 0;
             for (let i = 0; i < maxIteration; i++) {
-                // TODO: build and use k-d tree
                 const newPoints = currentPoints.map((point) => {
                     const pointSum = [0, 0, 0] as Triple;
                     let totalWeight = 0;
@@ -494,7 +500,7 @@ async function main() {
 
     progressDisplay.setLabel('Counting colors');
     const { indexArr, colorData } = await IndexerRunner.run(pixels, progressDisplay.set);
-    
+
     progressDisplay.detach();
 
     const algoRunner = <T extends QuantizationParameter[]>(
@@ -506,13 +512,18 @@ async function main() {
                 .append(document.body)
                 .setLabel('Quantizing');
             const result = await algo.run(colorData, parameter, progressDisplay.set);
+            console.log(result);
+
             progressDisplay.detach();
 
             for (let i = 0; i < indexArr.length; i++) {
-                const [r, g, b] = result.assignment[indexArr[i]];
-                pixels[4 * i + 0] = r;
-                pixels[4 * i + 1] = g;
-                pixels[4 * i + 2] = b;
+                const colIndex = indexArr[i];
+                if (colIndex !== -1) {
+                    const [r, g, b] = result.assignment[indexArr[i]];
+                    pixels[4 * i + 0] = r;
+                    pixels[4 * i + 1] = g;
+                    pixels[4 * i + 2] = b;
+                }
             }
 
             const img2 = document.createElement('img');
@@ -524,6 +535,7 @@ async function main() {
                 box.classList.add('col-list');
                 return box;
             }));
+
             const imgContainer = UI.createGroup([img2]);
             imgContainer.el.id = 'picture-container';
             document.body.appendChild(colDisplay.el);
