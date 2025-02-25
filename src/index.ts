@@ -543,7 +543,14 @@ const createApp = () => {
             imgContainer.el.id = 'picture-container';
             const retryButton = UI.createButton('Retry with the same picture');
             const changePicButton = UI.createButton('Upload another picture');
-            const currentElements = [colDisplay.el, imgContainer.el, retryButton, changePicButton];
+            const currentElements = [
+                colDisplay.el,
+                imgContainer.el,
+                UI.createGroup([retryButton, changePicButton]).el
+            ];
+
+            retryButton.classList.add('full-flex');
+            changePicButton.classList.add('full-flex');
             UI.append(document.body, currentElements);
 
             retryButton.addEventListener('click', () => {
