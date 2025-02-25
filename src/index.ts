@@ -428,16 +428,20 @@ function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
 
 async function promptInputSrc() {
     const imageInput = document.createElement('input');
+    const imageInputLabel = document.createElement('label');
     const advancedInputLabel = UI.createTextDiv('Advanced settings');
     const bitCount = UI.createGroup(UI.createInput('number', 'Bit pruning', '12'));
     bitCount.el.classList.add('input-group');
 
     imageInput.type = 'file';
     imageInput.accept = 'image/*';
-    UI.append(document.body, [imageInput, advancedInputLabel, bitCount.el]);
+    imageInput.id = 'image-input';
+    imageInputLabel.innerText = 'Input your image';
+    imageInputLabel.htmlFor = 'image-input';
+    UI.append(document.body, [imageInput, imageInputLabel, advancedInputLabel, bitCount.el]);
 
     await new Promise((res) => { imageInput.addEventListener('change', res); });
-    UI.detach([bitCount.el, advancedInputLabel, imageInput]);
+    UI.detach([bitCount.el, imageInputLabel, advancedInputLabel, imageInput]);
 
     const file = imageInput.files![0];
     const reader = new FileReader();
@@ -494,13 +498,11 @@ async function main() {
     const img1 = new Image();
     await Data.loadImage(img1, src);
     const pixelReader = Data.ImageArrayConverter(img1);
-
     const pixels = pixelReader.read(img1);
     pruneRgbBits(pixels, pruneBitCount);
 
     progressDisplay.setLabel('Counting colors');
     const { indexArr, colorData } = await IndexerRunner.run(pixels, progressDisplay.set);
-
     progressDisplay.detach();
 
     const algoRunner = <T extends QuantizationParameter[]>(

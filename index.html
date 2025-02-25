@@ -14,24 +14,14 @@
         }
 
         body {
-            background-image:
-                linear-gradient(45deg, #eee 25%, transparent 25%),
-                linear-gradient(-45deg, #eee 25%, transparent 25%),
-                linear-gradient(45deg, transparent 75%, #eee 75%),
-                linear-gradient(-45deg, transparent 75%, #eee 75%);
-            background-size: 20px 20px;
-            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
-
+            background-color: #eee;
             display: flex;
             flex-direction: column;
             flex: 1;
-
+            gap: 2px;
             margin: 20px 60px;
         }
 
-        button {
-            border: 1px solid black;
-        }
 
         input {
             border: 1px solid black;
@@ -43,7 +33,12 @@
         }
 
         input[type=file] {
-            height: 50px;
+            width: 0.1px;
+            height: 0.1px;
+            opacity: 0;
+            overflow: hidden;
+            position: absolute;
+            z-index: -1;
         }
 
         .input-group>* {
@@ -54,9 +49,30 @@
             flex: 1;
         }
 
-        button {
+        button,
+        label[for="image-input"] {
+            border: 1px solid black;
             height: 30px;
             text-align: center;
+            background: #e9f;
+            display: inline-block;
+            cursor: pointer;
+        }
+
+        label[for="image-input"] {
+            line-height: 80px;
+            height: 80px;
+        }
+
+        #image-input:focus+label {
+            outline: 1px dotted #000;
+            outline: Highlight auto 5px;
+            outline: -webkit-focus-ring-color auto 5px;
+        }
+
+        button:hover,
+        label[for="image-input"]:hover {
+            background-color: #97e;
         }
 
         .col-list {
@@ -64,12 +80,15 @@
             height: 25px;
             border: 1px solid black;
         }
+
         .col-list:not(:first-child) {
             border-left: none;
         }
+
         .col-list:not(:last-child) {
             border-right: none;
         }
+
         #picture-container {
             flex: 1 0 0;
             display: flex;
@@ -84,6 +103,13 @@
             width: auto;
             height: auto;
             object-fit: contain;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+            background-image:
+                linear-gradient(45deg, #eee 25%, transparent 25%),
+                linear-gradient(-45deg, #eee 25%, transparent 25%),
+                linear-gradient(45deg, transparent 75%, #eee 75%),
+                linear-gradient(-45deg, transparent 75%, #eee 75%);
+            background-size: 20px 20px;
         }
 
         .progress-bar {
@@ -104,13 +130,17 @@
             text-align: center;
         }
 
-        progress::-moz-progress-bar,
+        progress::-moz-progress-bar {
+            background: #e9f;
+        }
+
         progress::-webkit-progress-value {
-            background: skyblue;
+            background: #e9f;
         }
 
         .progress-bar>progress {
             border: 1px solid black;
+            background: #fff;
         }
     </style>
 </head>
