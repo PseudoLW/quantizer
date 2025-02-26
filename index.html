@@ -80,6 +80,12 @@
             pointer-events: none;
         }
 
+        .algo-selector:has(:focus) {
+            outline: Highlight auto 5px;
+            outline: -webkit-focus-ring-color auto 5px;
+            z-index: 2;
+        }
+
         .algo-selector>label {
             flex: 1;
             background-color: #e9f;

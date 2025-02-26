@@ -207,15 +207,15 @@ function createQuantizationAlgorithm<const P extends QuantizationParameter[]>(
 ) {
     const runner = workerize(algorithm);
     const normalizedName = name.toLowerCase().replaceAll(/[^a-z0-9]/g, '-');
+    let storedParameters = params.map((s) => s.defaultVal);
     return {
         name,
         normalizedName,
         buildParameterPrompt(onClick: (arg: { [k in keyof P]: number }) => void) {
-            const inputGroups = params.map(({ paramName: label, defaultVal }, i) => {
+            const inputGroups = params.map(({ paramName: label }, i) => {
                 const inputGroup = UI.createGroup(UI.createInput(
-                    'number',
-                    label,
-                    `${defaultVal}`,
+                    'number', label,
+                    `${storedParameters[i]}`,
                     `inputgroup-${normalizedName}-${i}`));
                 inputGroup.el.classList.add('input-group');
                 return inputGroup;
@@ -237,6 +237,7 @@ function createQuantizationAlgorithm<const P extends QuantizationParameter[]>(
             param: { [k in keyof P]: number },
             onProgress: (n: number) => void
         ) {
+            storedParameters = param;
             return runner.run({ param, data }, onProgress);
         }
     };
@@ -456,7 +457,7 @@ const createApp = () => {
     const IndexerRunner = workerize(indexColors);
     const progressDisplay = UI.createProgressBar();
     const pixelReader = Data.ImageArrayConverter();
-
+    let algorithmPreferenceIndex = 0;
     type UploadImageResult = { pixels: Uint8ClampedArray; colorData: ColorData[]; indexArr: number[]; };
 
     async function uploadImage(): Promise<UploadImageResult> {
@@ -532,7 +533,7 @@ const createApp = () => {
         type Algo<T extends QuantizationParameter[]> = ReturnType<typeof createQuantizationAlgorithm<T>>;
         const parameterElements: HTMLElement[] = [];
         const selectorRadio: (readonly [HTMLLabelElement, HTMLInputElement])[] = [];
-        ALGORITHMS.forEach(<T extends QuantizationParameter[]>(algo: Algo<T>) => {
+        ALGORITHMS.forEach(<T extends QuantizationParameter[]>(algo: Algo<T>, i: number) => {
             const { colorData, indexArr, pixels } = arg;
             const group = algo.buildParameterPrompt(async (parameter) => {
                 UI.detach([radioGroups.el, ...parameterElements]);
@@ -550,11 +551,12 @@ const createApp = () => {
             radioGroup[1].addEventListener('change', () => {
                 parameterElements.forEach((e) => { e.hidden = true; });
                 group.hidden = false;
+                algorithmPreferenceIndex = i;
             });
             selectorRadio.push(radioGroup);
         });
-        selectorRadio[0][1].checked = true;
-        parameterElements[0].hidden = false;
+        selectorRadio[algorithmPreferenceIndex][1].checked = true;
+        parameterElements[algorithmPreferenceIndex].hidden = false;
         const radioGroups = UI.createGroup(selectorRadio.flatMap((s) => [s[1], s[0]]));
         radioGroups.el.classList.add('algo-selector');
         UI.append(document.body, [radioGroups.el, ...parameterElements]);
