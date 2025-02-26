@@ -10,10 +10,40 @@ namespace UI {
         children.forEach((c) => c.parentElement?.removeChild(c));
     }
 
+    export function createProgressBar() {
+        const el = document.createElement('div');
+        const progEl = document.createElement('progress');
+        const labelEl = document.createElement('label');
+        el.classList.add('progress-bar');
+        UI.append(el, [progEl, labelEl]);
+        let label = '';
+        const set = (progress: number) => {
+            progEl.value = progress;
+
+            labelEl.textContent = `${label} [${(progress * 100).toFixed(0)}%]`;
+        };
+
+        return {
+            el, set,
+            setLabel(l: string) {
+                label = l;
+                return this;
+            },
+            append(parent: HTMLElement) {
+                parent.appendChild(el);
+                return this;
+            },
+            detach() {
+                el.parentElement?.removeChild(el);
+                return this;
+            }
+        };
+    }
+
     export function createInput(
         inputType: string,
         label: string,
-        initialValue: string,
+        initialValue?: string | undefined,
         id = 'input-' + Math.floor(100000 * Math.random()).toString().padEnd(5, '0')
     ) {
         const inputEl = document.createElement('input');
@@ -22,7 +52,9 @@ namespace UI {
         labelEl.innerText = label;
         labelEl.htmlFor = id;
         inputEl.type = inputType;
-        inputEl.value = initialValue;
+        if (initialValue !== undefined) {
+            inputEl.value = initialValue;
+        }
         inputEl.id = id;
 
         return [labelEl, inputEl] as const;
@@ -41,10 +73,7 @@ namespace UI {
         const el = document.createElement('div');
         members.forEach((member) => { el.appendChild(member); });
 
-        return {
-            el,
-            children: members
-        };
+        return { el, children: members };
     }
 
     export function createTextDiv(text: string) {
@@ -165,34 +194,6 @@ function indexColors(data: Uint8ClampedArray, postProgress: (n: number) => void)
     return { colorData, indexArr };
 }
 
-function buildParameterUI(
-    inputs: { paramName: string; defaultVal: number; }[]
-) {
-    return new Promise<number[]>((res) => {
-        const id = 'inputGroup-' + Math
-            .floor(100000 * Math.random())
-            .toString()
-            .padStart(5, '0');
-        const inputGroups = inputs.map(({ paramName: label, defaultVal }, i) => {
-            const inputGroup = UI.createGroup(UI.createInput(
-                'number',
-                label,
-                `${defaultVal}`,
-                id + `-${i}`));
-            inputGroup.el.classList.add('input-group');
-            document.body.appendChild(inputGroup.el);
-            return inputGroup;
-        });
-
-        const button = UI.createButton('Quantize!', () => {
-            res(inputGroups.map((g) => g.children[1].valueAsNumber));
-            inputGroups.forEach((g) => document.body.removeChild(g.el));
-            document.body.removeChild(button);
-        });
-        document.body.appendChild(button);
-    });
-}
-
 function createQuantizationAlgorithm<const P extends QuantizationParameter[]>(
     name: string,
     params: P,
@@ -205,24 +206,42 @@ function createQuantizationAlgorithm<const P extends QuantizationParameter[]>(
     }
 ) {
     const runner = workerize(algorithm);
+    const normalizedName = name.toLowerCase().replaceAll(/[^a-z0-9]/g, '-');
     return {
         name,
+        normalizedName,
+        buildParameterPrompt(onClick: (arg: { [k in keyof P]: number }) => void) {
+            const inputGroups = params.map(({ paramName: label, defaultVal }, i) => {
+                const inputGroup = UI.createGroup(UI.createInput(
+                    'number',
+                    label,
+                    `${defaultVal}`,
+                    `inputgroup-${normalizedName}-${i}`));
+                inputGroup.el.classList.add('input-group');
+                return inputGroup;
+            });
 
-        promptParameter: async () => {
-            return await buildParameterUI(params) as {
-                [key in keyof P]: number
-            };
+            const button = UI.createButton('Quantize!', () => {
+                onClick(inputGroups.map((g) => g.children[1].valueAsNumber) as { [k in keyof P]: number });
+            });
+
+            const elements = [...inputGroups.map(g => g.el), button];
+            const group = UI.createGroup(elements);
+            group.el.classList.add('parameter-group');
+            document.body.appendChild(group.el);
+
+            return group.el;
         },
-
         run(
             data: ColorData[],
-            param: { [key in keyof P]: number },
+            param: { [k in keyof P]: number },
             onProgress: (n: number) => void
         ) {
             return runner.run({ param, data }, onProgress);
         }
     };
 };
+
 
 const ALGORITHMS = [
     createQuantizationAlgorithm('K-Means',
@@ -433,176 +452,148 @@ function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
     }
 }
 
-async function promptInputSrc() {
-    const imageInput = document.createElement('input');
-    const imageInputLabel = document.createElement('label');
-    const advancedInputLabel = UI.createTextDiv('Advanced settings');
-    const bitCount = UI.createGroup(UI.createInput('number', 'Bit pruning', '12'));
-    bitCount.el.classList.add('input-group');
-
-    imageInput.type = 'file';
-    imageInput.accept = 'image/*';
-    imageInput.id = 'image-input';
-    imageInputLabel.innerText = 'Input your image';
-    imageInputLabel.htmlFor = 'image-input';
-    UI.append(document.body, [imageInput, imageInputLabel, advancedInputLabel, bitCount.el]);
-
-    await new Promise((res) => { imageInput.addEventListener('change', res); });
-    UI.detach([bitCount.el, imageInputLabel, advancedInputLabel, imageInput]);
-
-    const file = imageInput.files![0];
-    const reader = new FileReader();
-
-    const src = await new Promise<string>((res) => {
-        reader.addEventListener('load', () => res(reader.result as string));
-        reader.readAsDataURL(file);
-    });
-    return { src, pruneBitCount: bitCount.children[1].valueAsNumber };
-}
-
-function createProgressDisplay() {
-    const el = document.createElement('div');
-    const progEl = document.createElement('progress');
-    const labelEl = document.createElement('label');
-    el.classList.add('progress-bar');
-    UI.append(el, [progEl, labelEl]);
-    let label = '';
-    const set = (progress: number) => {
-        progEl.value = progress;
-
-        labelEl.textContent = `${label} [${(progress * 100).toFixed(0)}%]`;
-    };
-
-    return {
-        el, set,
-        setLabel(l: string) {
-            label = l;
-            return this;
-        },
-        append(parent: HTMLElement) {
-            parent.appendChild(el);
-            return this;
-        },
-        detach() {
-            el.parentElement?.removeChild(el);
-            return this;
-        }
-    };
-}
-
 const createApp = () => {
     const IndexerRunner = workerize(indexColors);
-    const progressDisplay = createProgressDisplay();
+    const progressDisplay = UI.createProgressBar();
     const pixelReader = Data.ImageArrayConverter();
 
     type UploadImageResult = { pixels: Uint8ClampedArray; colorData: ColorData[]; indexArr: number[]; };
-    const App = {
-        progressDisplay,
-        pixelReader,
-        async uploadImage(): Promise<UploadImageResult> {
-            const { src, pruneBitCount } = await promptInputSrc();
-            progressDisplay
-                .append(document.body)
-                .setLabel('Loading image')
-                .set(0);
-            const inputImage = new Image();
-            await Data.loadImage(inputImage, src);
-            const pixels = pixelReader.read(inputImage);
-            pruneRgbBits(pixels, pruneBitCount);
 
-            progressDisplay.setLabel('Counting colors');
-            const indexerOutput = await IndexerRunner.run(pixels, progressDisplay.set);
-            progressDisplay.detach();
+    async function uploadImage(): Promise<UploadImageResult> {
+        const { src, pruneBitCount } = await promptInputSrc();
+        progressDisplay
+            .append(document.body)
+            .setLabel('Loading image')
+            .set(0);
+        const inputImage = new Image();
+        await Data.loadImage(inputImage, src);
+        const pixels = pixelReader.read(inputImage);
+        pruneRgbBits(pixels, pruneBitCount);
 
-            return { pixels, ...indexerOutput };
-        },
+        progressDisplay.setLabel('Counting colors');
+        const indexerOutput = await IndexerRunner.run(pixels, progressDisplay.set);
+        progressDisplay.detach();
 
-        async displayPicture(
-            result: { assignment: Triple[], colors: Triple[]; },
-            pixels: Uint8ClampedArray,
-            indexArr: number[],
+        return { pixels, ...indexerOutput };
+    }
 
-            colorData: ColorData[]
-        ) {
-            for (let i = 0; i < indexArr.length; i++) {
-                const colIndex = indexArr[i];
-                if (colIndex !== -1) {
-                    const [r, g, b] = result.assignment[indexArr[i]];
-                    pixels[4 * i + 0] = r; pixels[4 * i + 1] = g; pixels[4 * i + 2] = b;
-                }
+    async function displayPicture(
+        result: { assignment: Triple[], colors: Triple[]; },
+        pixels: Uint8ClampedArray,
+        indexArr: number[],
+
+        colorData: ColorData[]
+    ) {
+        for (let i = 0; i < indexArr.length; i++) {
+            const colIndex = indexArr[i];
+            if (colIndex !== -1) {
+                const [r, g, b] = result.assignment[indexArr[i]];
+                pixels[4 * i + 0] = r;
+                pixels[4 * i + 1] = g;
+                pixels[4 * i + 2] = b;
             }
-
-            const img2 = document.createElement('img');
-            await App.pixelReader.write(img2, pixels);
-
-            const colDisplay = UI.createGroup(result.colors.map(([r, g, b]) => {
-                const box = document.createElement('div');
-                box.style.background = `rgba(${r}, ${g}, ${b}, 1.0)`;
-                box.classList.add('col-list');
-                return box;
-            }));
-
-            const imgContainer = UI.createGroup([img2]);
-            imgContainer.el.id = 'picture-container';
-            const retryButton = UI.createButton('Retry with the same picture');
-            const changePicButton = UI.createButton('Upload another picture');
-            const currentElements = [
-                colDisplay.el,
-                imgContainer.el,
-                UI.createGroup([retryButton, changePicButton]).el
-            ];
-
-            retryButton.classList.add('full-flex');
-            changePicButton.classList.add('full-flex');
-            UI.append(document.body, currentElements);
-
-            retryButton.addEventListener('click', () => {
-                UI.detach(currentElements);
-                App.promptAndRunAlgorithm({ colorData, pixels, indexArr });
-            });
-            changePicButton.addEventListener('click', () => {
-                UI.detach(currentElements);
-                App.run();
-            });
-        },
-
-        async promptAndRunAlgorithm(arg: UploadImageResult) {
-            const fn = <T extends QuantizationParameter[]>(algo: ReturnType<typeof createQuantizationAlgorithm<T>>) => {
-                const { colorData, indexArr, pixels } = arg;
-                const run = async () => {
-                    const parameter = await algo.promptParameter();
-                    progressDisplay
-                        .append(document.body)
-                        .setLabel('Quantizing');
-                    const result = await algo.run(colorData, parameter, progressDisplay.set);
-
-                    progressDisplay.detach();
-                    await App.displayPicture(result, pixels, indexArr, colorData);
-                };
-
-                return {
-                    button: UI.createButton(algo.name),
-                    run
-                };
-            };
-            const algos = ALGORITHMS.map(fn);
-            const algoIndex = await new Promise<number>((res) => {
-                UI.append(document.body, algos.map((s, i) => {
-                    s.button.addEventListener('click', () => res(i));
-                    return s.button;
-                }));
-            });
-
-            algos.forEach((a) => document.body.removeChild(a.button));
-            await algos[algoIndex].run();
-        },
-
-        async run() {
-            const out = await App.uploadImage();
-            await App.promptAndRunAlgorithm(out);
         }
-    };
-    return App;
+
+        const img2 = document.createElement('img');
+        await pixelReader.write(img2, pixels);
+
+        const colDisplay = UI.createGroup(result.colors.map(([r, g, b]) => {
+            const box = document.createElement('div');
+            box.style.background = `rgba(${r}, ${g}, ${b}, 1.0)`;
+            box.classList.add('col-list');
+            return box;
+        }));
+
+        const imgContainer = UI.createGroup([img2]);
+        imgContainer.el.id = 'picture-container';
+        const retryButton = UI.createButton('Retry with the same picture');
+        const changePicButton = UI.createButton('Upload another picture');
+        const currentElements = [
+            colDisplay.el,
+            imgContainer.el,
+            UI.createGroup([retryButton, changePicButton]).el
+        ];
+
+        retryButton.classList.add('full-flex');
+        changePicButton.classList.add('full-flex');
+        UI.append(document.body, currentElements);
+
+        retryButton.addEventListener('click', () => {
+            UI.detach(currentElements);
+            promptAndRunAlgorithm({ colorData, pixels, indexArr });
+        });
+        changePicButton.addEventListener('click', () => {
+            UI.detach(currentElements);
+            run();
+        });
+    }
+
+    async function promptAndRunAlgorithm(arg: UploadImageResult) {
+        type Algo<T extends QuantizationParameter[]> = ReturnType<typeof createQuantizationAlgorithm<T>>;
+        const parameterElements: HTMLElement[] = [];
+        const selectorRadio: (readonly [HTMLLabelElement, HTMLInputElement])[] = [];
+        ALGORITHMS.forEach(<T extends QuantizationParameter[]>(algo: Algo<T>) => {
+            const { colorData, indexArr, pixels } = arg;
+            const group = algo.buildParameterPrompt(async (parameter) => {
+                UI.detach([radioGroups.el, ...parameterElements]);
+                progressDisplay.append(document.body);
+                const result = await algo.run(colorData, parameter, progressDisplay.set);
+                progressDisplay.detach();
+                displayPicture(result, pixels, indexArr, colorData);
+            });
+            group.id = 'parameter-group-' + algo.normalizedName;
+            parameterElements.push(group);
+            group.hidden = true;
+
+            const radioGroup = UI.createInput('radio', algo.name, algo.name);
+            radioGroup[1].name = 'algorithm';
+            radioGroup[1].addEventListener('change', () => {
+                parameterElements.forEach((e) => { e.hidden = true; });
+                group.hidden = false;
+            });
+            selectorRadio.push(radioGroup);
+        });
+        selectorRadio[0][1].checked = true;
+        parameterElements[0].hidden = false;
+        const radioGroups = UI.createGroup(selectorRadio.flatMap((s) => [s[1], s[0]]));
+        radioGroups.el.classList.add('algo-selector');
+        UI.append(document.body, [radioGroups.el, ...parameterElements]);
+    }
+
+    async function promptInputSrc() {
+        const imageInput = document.createElement('input');
+        const imageInputLabel = document.createElement('label');
+        const advancedInputLabel = UI.createTextDiv('Advanced settings');
+        const bitCount = UI.createGroup(UI.createInput('number', 'Bit pruning', '12'));
+        bitCount.el.classList.add('input-group');
+
+        imageInput.type = 'file';
+        imageInput.accept = 'image/*';
+        imageInput.id = 'image-input';
+        imageInputLabel.innerText = 'Input your image';
+        imageInputLabel.htmlFor = 'image-input';
+        UI.append(document.body, [imageInput, imageInputLabel, advancedInputLabel, bitCount.el]);
+
+        await new Promise((res) => { imageInput.addEventListener('change', res); });
+        UI.detach([bitCount.el, imageInputLabel, advancedInputLabel, imageInput]);
+
+        const file = imageInput.files![0];
+        const reader = new FileReader();
+
+        const src = await new Promise<string>((res) => {
+            reader.addEventListener('load', () => res(reader.result as string));
+            reader.readAsDataURL(file);
+        });
+        return { src, pruneBitCount: bitCount.children[1].valueAsNumber };
+    }
+
+    async function run() {
+        const out = await uploadImage();
+        await promptAndRunAlgorithm(out);
+    }
+    return { run };
 };
+
+
 
 createApp().run();
