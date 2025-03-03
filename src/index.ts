@@ -1,4 +1,4 @@
-type Triple = [number, number, number];
+type Triple<T = number> = [T, T, T];
 type ColorData = { count: number; oklabColor: Triple; };
 type QuantizationParameter = { paramName: string, defaultVal: number; };
 
@@ -435,6 +435,119 @@ const ALGORITHMS = [
             return { assignment, colors: Array.from(colorSet.values()) };
         }
     ),
+
+    createQuantizationAlgorithm('Median cut',
+        [{ paramName: 'Color count', defaultVal: 8 }],
+        ({ param: [colorCount], data }, postProgress) => {
+            const arr = data.map((s, i) => ({
+                weight: s.count,
+                color: s.oklabColor,
+                index: i
+            }));
+            type Axis = 0 | 1 | 2;
+            function findBestAxisInSlice(lo: number, hi: number) {
+                const bestValues = Array.from(
+                    { length: 3 },
+                    () => ({ min: Infinity, max: -Infinity })
+                ) as Triple<{ min: number, max: number; }>;
+                for (let i = lo; i <= hi; i++) {
+                    for (let axis = 0 as Axis; axis <= 3; axis++) {
+                        const component = data[i].oklabColor[axis];
+                        const { min, max } = bestValues[axis];
+                        bestValues[axis].min = Math.min(min, component);
+                        bestValues[axis].max = Math.max(max, component);
+                    }
+                }
+                let bestAxis = 0;
+                let bestAxisDifference = -Infinity;
+                for (let axis = 0 as Axis; axis <= 3; axis++) {
+                    const axisValues = bestValues[axis];
+                    const axisDifference = axisValues.max - axisValues.min;
+                    if (axisDifference > bestAxisDifference) {
+                        bestAxis = axis;
+                        bestAxisDifference = axisDifference;
+                    }
+                }
+                return { axis: bestAxis, span: bestAxisDifference };
+            }
+
+            function swap(arr: unknown[], i1: number, i2: number) {
+                let temp = arr[i1];
+                arr[i1] = arr[i2];
+                arr[i2] = temp;
+            }
+
+            function partitionSlice(
+                slice: Slice,
+                targetWeight = slice.weightSum / 2
+            ) {
+                const {
+                    indices: { lo, hi },
+                    weightSum,
+                    range: { axis }
+                } = slice;
+                const pivotIndex = Math.floor(Math.random() * (hi - lo)) + lo;
+                const pivot = arr[pivotIndex];
+
+                let i = lo - 1, j = hi;
+                let leftWeightSum = 0;
+                while (true) {
+                    do {
+                        i++;
+                        leftWeightSum += arr[i].weight;
+                    } while (arr[i].color[axis] < pivot.color[axis]);
+                    do {
+                        j++;
+                    } while (arr[i].color[axis] > pivot.color[axis]);
+                    if (i > j) { 
+                        return [{
+                            indices: { lo, hi: i },
+                            range: { axis, span: NaN /* Irrelevant */ },
+                            weightSum: leftWeightSum
+                        }, {
+                            indices: { lo: i, hi },
+                            range: { axis, span: NaN /* Idem */ },
+                            weightSum: weightSum - leftWeightSum
+                        }] satisfies [Slice, Slice];
+
+                    }
+                    swap(arr, i, j);
+                }
+            }
+
+            type Slice = {
+                indices: { lo: number; hi: number; }; // incl left excl right
+                range: { axis: number; span: number; };
+                weightSum: number;
+            };
+            const sliceQueue = [{
+                indices: { lo: 0, hi: arr.length - 1 },
+                range: findBestAxisInSlice(0, arr.length - 1),
+                weightSum: data.reduce((acc, i) => acc + i.count, 0)
+            }] as Slice[];
+
+            for (let _ = 0; _ < colorCount; _++) {
+                const bestSliceIdx = sliceQueue.reduce(
+                    (best, slice, i) => {
+                        const span = slice.range.span;
+                        if (span > best.span) {
+                            best.index = i;
+                            best.span = span;
+                        }
+                        return best;
+                    }, { index: NaN, span: 0 }).index;
+                swap(sliceQueue, bestSliceIdx, sliceQueue.length - 1);
+                const slice = sliceQueue.pop()!;
+
+                const targetWeight = slice.weightSum / 2;
+
+                // while (true) {
+                //     const partitionResult = partitionSlice()
+                // }
+
+            }
+        }
+    )
 
 ] as const;
 
