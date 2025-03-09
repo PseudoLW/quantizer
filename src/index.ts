@@ -1,6 +1,6 @@
 type Triple<T = number> = [T, T, T];
 type ColorData = { count: number; oklabColor: Triple; };
-type QuantizationParameter = { paramName: string, defaultVal: number; };
+type QuantizationParameter = { paramName: string, tip: string, defaultVal: number; };
 
 namespace UI {
     export function append(parent: HTMLElement, children: HTMLElement[]) {
@@ -44,7 +44,8 @@ namespace UI {
         inputType: string,
         label: string,
         initialValue?: string | undefined,
-        id = 'input-' + Math.floor(100000 * Math.random()).toString().padEnd(5, '0')
+        id = 'input-' + Math.floor(100000 * Math.random()).toString().padEnd(5, '0'),
+        tooltip = ''
     ) {
         const inputEl = document.createElement('input');
         const labelEl = document.createElement('label');
@@ -56,6 +57,9 @@ namespace UI {
             inputEl.value = initialValue;
         }
         inputEl.id = id;
+        if (tooltip) {
+            labelEl.title = tooltip;
+        }
 
         return [labelEl, inputEl] as const;
     }
@@ -77,7 +81,7 @@ namespace UI {
     }
 
     export function createTextDiv(text: string) {
-        const el = document.createElement('div');
+        const el = document.createElement('p');
         el.textContent = text;
         return el;
     }
@@ -196,6 +200,7 @@ function indexColors(data: Uint8ClampedArray, postProgress: (n: number) => void)
 
 function createQuantizationAlgorithm<const P extends QuantizationParameter[]>(
     name: string,
+    description: string,
     params: P,
     algorithm: (
         args: { param: { [key in keyof P]: number }, data: ColorData[]; },
@@ -212,20 +217,24 @@ function createQuantizationAlgorithm<const P extends QuantizationParameter[]>(
         name,
         normalizedName,
         buildParameterPrompt(onClick: (arg: { [k in keyof P]: number }) => void) {
-            const inputGroups = params.map(({ paramName: label }, i) => {
+            const inputGroups = params.map(({ paramName: label, tip }, i) => {
                 const inputGroup = UI.createGroup(UI.createInput(
                     'number', label,
                     `${storedParameters[i]}`,
-                    `inputgroup-${normalizedName}-${i}`));
+                    `inputgroup-${normalizedName}-${i}`, tip));
                 inputGroup.el.classList.add('input-group');
                 return inputGroup;
             });
 
-            const button = UI.createButton('Quantize!', () => {
+            const executeButton = UI.createButton('Quantize!', () => {
                 onClick(inputGroups.map((g) => g.children[1].valueAsNumber) as { [k in keyof P]: number });
             });
-
-            const elements = [...inputGroups.map(g => g.el), button];
+            const descriptionEl = UI.createTextDiv(description);
+            const elements = [
+                descriptionEl,
+                ...inputGroups.map(g => g.el),
+                executeButton
+            ];
             const group = UI.createGroup(elements);
             group.el.classList.add('parameter-group');
             document.body.appendChild(group.el);
@@ -246,9 +255,12 @@ function createQuantizationAlgorithm<const P extends QuantizationParameter[]>(
 
 const ALGORITHMS = [
     createQuantizationAlgorithm('K-Means',
+        'Tries to find the best set of colors that is the closest to each ' +
+        'color in the original image. This method is probabilistic and ' +
+        'will give different results each time it is run.',
         [
-            { paramName: 'Color count', defaultVal: 8 },
-            { paramName: 'Attempts', defaultVal: 8 },
+            { paramName: 'Color count', defaultVal: 8, tip: 'How many colors to use' },
+            { paramName: 'Attempts', defaultVal: 8, tip: 'How many times to try to find the best colors' },
         ],
         (({ param: [colorCount, attempts], data }, postProgress) => {
             if (colorCount > data.length) {
@@ -362,7 +374,9 @@ const ALGORITHMS = [
     ),
 
     createQuantizationAlgorithm('Mean shift',
-        [{ paramName: 'Radius', defaultVal: 0.07 }],
+        'Moves each color a little bit towards its neighbors. This method ' +
+        'can be slow for images with vast amounts of colors.',
+        [{ paramName: 'Closeness', defaultVal: 0.07, tip: 'How close the colors should be to be considered neighbors' }],
         ({ param: [radius], data }, postProgress) => {
             const maxIteration = 100;
             function toRgb([L, A, B]: Triple) {
@@ -436,118 +450,114 @@ const ALGORITHMS = [
         }
     ),
 
-    createQuantizationAlgorithm('Median cut',
-        [{ paramName: 'Color count', defaultVal: 8 }],
-        ({ param: [colorCount], data }, postProgress) => {
-            const arr = data.map((s, i) => ({
-                weight: s.count,
-                color: s.oklabColor,
-                index: i
-            }));
-            type Axis = 0 | 1 | 2;
-            function findBestAxisInSlice(lo: number, hi: number) {
-                const bestValues = Array.from(
-                    { length: 3 },
-                    () => ({ min: Infinity, max: -Infinity })
-                ) as Triple<{ min: number, max: number; }>;
-                for (let i = lo; i <= hi; i++) {
-                    for (let axis = 0 as Axis; axis <= 3; axis++) {
-                        const component = data[i].oklabColor[axis];
-                        const { min, max } = bestValues[axis];
-                        bestValues[axis].min = Math.min(min, component);
-                        bestValues[axis].max = Math.max(max, component);
-                    }
-                }
-                let bestAxis = 0;
-                let bestAxisDifference = -Infinity;
-                for (let axis = 0 as Axis; axis <= 3; axis++) {
-                    const axisValues = bestValues[axis];
-                    const axisDifference = axisValues.max - axisValues.min;
-                    if (axisDifference > bestAxisDifference) {
-                        bestAxis = axis;
-                        bestAxisDifference = axisDifference;
-                    }
-                }
-                return { axis: bestAxis, span: bestAxisDifference };
-            }
+    // createQuantizationAlgorithm('Median cut',
+    //     [{ paramName: 'Color count', defaultVal: 8 }],
+    //     ({ param: [colorCount], data }, postProgress) => {
+    //         const arr = data.map((s, i) => ({
+    //             weight: s.count,
+    //             color: s.oklabColor,
+    //             index: i
+    //         }));
+    //         type Axis = 0 | 1 | 2;
+    //         function findBestAxisInSlice(lo: number, hi: number) {
+    //             const bestValues = Array.from(
+    //                 { length: 3 },
+    //                 () => ({ min: Infinity, max: -Infinity })
+    //             ) as Triple<{ min: number, max: number; }>;
+    //             for (let i = lo; i <= hi; i++) {
+    //                 for (let axis = 0 as Axis; axis <= 3; axis++) {
+    //                     const component = data[i].oklabColor[axis];
+    //                     const { min, max } = bestValues[axis];
+    //                     bestValues[axis].min = Math.min(min, component);
+    //                     bestValues[axis].max = Math.max(max, component);
+    //                 }
+    //             }
+    //             let bestAxis = 0;
+    //             let bestAxisDifference = -Infinity;
+    //             for (let axis = 0 as Axis; axis <= 3; axis++) {
+    //                 const axisValues = bestValues[axis];
+    //                 const axisDifference = axisValues.max - axisValues.min;
+    //                 if (axisDifference > bestAxisDifference) {
+    //                     bestAxis = axis;
+    //                     bestAxisDifference = axisDifference;
+    //                 }
+    //             }
+    //             return { axis: bestAxis, span: bestAxisDifference };
+    //         }
 
-            function swap(arr: unknown[], i1: number, i2: number) {
-                let temp = arr[i1];
-                arr[i1] = arr[i2];
-                arr[i2] = temp;
-            }
+    //         function swap(arr: unknown[], i1: number, i2: number) {
+    //             let temp = arr[i1];
+    //             arr[i1] = arr[i2];
+    //             arr[i2] = temp;
+    //         }
 
-            function partitionSlice(
-                slice: Slice,
-                targetWeight = slice.weightSum / 2
-            ) {
-                const {
-                    indices: { lo, hi },
-                    weightSum,
-                    range: { axis }
-                } = slice;
-                const pivotIndex = Math.floor(Math.random() * (hi - lo)) + lo;
-                const pivot = arr[pivotIndex];
+    //         function partitionSlice(
+    //             lo: number, hi: number, axis: number,
+    //             weightSum: number,
+    //             targetWeight = slice.weightSum / 2
+    //         ) {
+    //             const pivotIndex = Math.floor(Math.random() * (hi - lo)) + lo;
+    //             const pivot = arr[pivotIndex];
 
-                let i = lo - 1, j = hi;
-                let leftWeightSum = 0;
-                while (true) {
-                    do {
-                        i++;
-                        leftWeightSum += arr[i].weight;
-                    } while (arr[i].color[axis] < pivot.color[axis]);
-                    do {
-                        j++;
-                    } while (arr[i].color[axis] > pivot.color[axis]);
-                    if (i > j) { 
-                        return [{
-                            indices: { lo, hi: i },
-                            range: { axis, span: NaN /* Irrelevant */ },
-                            weightSum: leftWeightSum
-                        }, {
-                            indices: { lo: i, hi },
-                            range: { axis, span: NaN /* Idem */ },
-                            weightSum: weightSum - leftWeightSum
-                        }] satisfies [Slice, Slice];
+    //             let i = lo - 1, j = hi;
+    //             let leftWeightSum = 0;
+    //             while (true) {
+    //                 do {
+    //                     i++;
+    //                     leftWeightSum += arr[i].weight;
+    //                 } while (arr[i].color[axis] < pivot.color[axis]);
+    //                 do {
+    //                     j++;
+    //                 } while (arr[i].color[axis] > pivot.color[axis]);
+    //                 if (i > j) { 
+    //                     return [{
+    //                         indices: { lo, hi: i },
+    //                         range: { axis, span: NaN /* Irrelevant */ },
+    //                         weightSum: leftWeightSum
+    //                     }, {
+    //                         indices: { lo: i, hi },
+    //                         range: { axis, span: NaN /* Idem */ },
+    //                         weightSum: weightSum - leftWeightSum
+    //                     }] satisfies [Slice, Slice];
 
-                    }
-                    swap(arr, i, j);
-                }
-            }
+    //                 }
+    //                 swap(arr, i, j);
+    //             }
+    //         }
 
-            type Slice = {
-                indices: { lo: number; hi: number; }; // incl left excl right
-                range: { axis: number; span: number; };
-                weightSum: number;
-            };
-            const sliceQueue = [{
-                indices: { lo: 0, hi: arr.length - 1 },
-                range: findBestAxisInSlice(0, arr.length - 1),
-                weightSum: data.reduce((acc, i) => acc + i.count, 0)
-            }] as Slice[];
+    //         type Slice = {
+    //             indices: { lo: number; hi: number; }; // incl left excl right
+    //             range: { axis: number; span: number; };
+    //             weightSum: number;
+    //         };
+    //         const sliceQueue = [{
+    //             indices: { lo: 0, hi: arr.length - 1 },
+    //             range: findBestAxisInSlice(0, arr.length - 1),
+    //             weightSum: data.reduce((acc, i) => acc + i.count, 0)
+    //         }] as Slice[];
 
-            for (let _ = 0; _ < colorCount; _++) {
-                const bestSliceIdx = sliceQueue.reduce(
-                    (best, slice, i) => {
-                        const span = slice.range.span;
-                        if (span > best.span) {
-                            best.index = i;
-                            best.span = span;
-                        }
-                        return best;
-                    }, { index: NaN, span: 0 }).index;
-                swap(sliceQueue, bestSliceIdx, sliceQueue.length - 1);
-                const slice = sliceQueue.pop()!;
+    //         for (let _ = 0; _ < colorCount; _++) {
+    //             const bestSliceIdx = sliceQueue.reduce(
+    //                 (best, slice, i) => {
+    //                     const span = slice.range.span;
+    //                     if (span > best.span) {
+    //                         best.index = i;
+    //                         best.span = span;
+    //                     }
+    //                     return best;
+    //                 }, { index: NaN, span: 0 }).index;
+    //             swap(sliceQueue, bestSliceIdx, sliceQueue.length - 1);
+    //             const slice = sliceQueue.pop()!;
 
-                const targetWeight = slice.weightSum / 2;
+    //             const targetWeight = slice.weightSum / 2;
 
-                // while (true) {
-                //     const partitionResult = partitionSlice()
-                // }
+    //             // while (true) {
+    //             //     const partitionResult = partitionSlice()
+    //             // }
 
-            }
-        }
-    )
+    //         }
+    //     }
+    // )
 
 ] as const;
 
@@ -678,8 +688,16 @@ const createApp = () => {
     async function promptInputSrc() {
         const imageInput = document.createElement('input');
         const imageInputLabel = document.createElement('label');
-        const advancedInputLabel = UI.createTextDiv('Advanced settings');
-        const bitCount = UI.createGroup(UI.createInput('number', 'Bit pruning', '12'));
+        const advancedInputLabel = UI.createTextDiv('Advanced settings, hover at the label to see what they do.');
+        const bitCount = UI.createGroup(UI.createInput(
+            'number', 
+            'Bit pruning', 
+            '12', 
+            'bit-count', 
+            'How many bits to use for each color channel. If you are sure ' +
+            'that your image has few unique colors, you can bump this up to ' +
+            'preserve original colors.'
+        ));
         bitCount.el.classList.add('input-group');
 
         imageInput.type = 'file';
