@@ -450,141 +450,141 @@ const ALGORITHMS = [
         }
     ),
 
-    createQuantizationAlgorithm('Median cut',
-        '',
-        [{ paramName: 'Color count', defaultVal: 8, tip: 'How many colors to use' }],
-        ({ param: [colorCount], data }, postProgress) => {
-            const arr = data.map((s, i) => ({
-                weight: s.count,
-                color: s.oklabColor,
-                index: i
-            }));
-            type Axis = 0 | 1 | 2;
-            function findBestAxisInSlice(lo: number, hi: number) {
-                const bestValues = Array.from(
-                    { length: 3 },
-                    () => ({ min: Infinity, max: -Infinity })
-                ) as Triple<{ min: number, max: number; }>;
-                for (let i = lo; i <= hi; i++) {
-                    for (let axis = 0 as Axis; axis <= 3; axis++) {
-                        const component = data[i].oklabColor[axis];
-                        const { min, max } = bestValues[axis];
-                        bestValues[axis].min = Math.min(min, component);
-                        bestValues[axis].max = Math.max(max, component);
-                    }
-                }
-                let bestAxis = 0;
-                let bestAxisDifference = -Infinity;
-                for (let axis = 0 as Axis; axis <= 3; axis++) {
-                    const axisValues = bestValues[axis];
-                    const axisDifference = axisValues.max - axisValues.min;
-                    if (axisDifference > bestAxisDifference) {
-                        bestAxis = axis;
-                        bestAxisDifference = axisDifference;
-                    }
-                }
-                return { axis: bestAxis, span: bestAxisDifference };
-            }
+    // createQuantizationAlgorithm('Median cut',
+    //     '',
+    //     [{ paramName: 'Color count', defaultVal: 8, tip: 'How many colors to use' }],
+    //     ({ param: [colorCount], data }, postProgress) => {
+    //         const arr = data.map((s, i) => ({
+    //             weight: s.count,
+    //             color: s.oklabColor,
+    //             index: i
+    //         }));
+    //         type Axis = 0 | 1 | 2;
+    //         function findBestAxisInSlice(lo: number, hi: number) {
+    //             const bestValues = Array.from(
+    //                 { length: 3 },
+    //                 () => ({ min: Infinity, max: -Infinity })
+    //             ) as Triple<{ min: number, max: number; }>;
+    //             for (let i = lo; i <= hi; i++) {
+    //                 for (let axis = 0 as Axis; axis <= 3; axis++) {
+    //                     const component = data[i].oklabColor[axis];
+    //                     const { min, max } = bestValues[axis];
+    //                     bestValues[axis].min = Math.min(min, component);
+    //                     bestValues[axis].max = Math.max(max, component);
+    //                 }
+    //             }
+    //             let bestAxis = 0;
+    //             let bestAxisDifference = -Infinity;
+    //             for (let axis = 0 as Axis; axis <= 3; axis++) {
+    //                 const axisValues = bestValues[axis];
+    //                 const axisDifference = axisValues.max - axisValues.min;
+    //                 if (axisDifference > bestAxisDifference) {
+    //                     bestAxis = axis;
+    //                     bestAxisDifference = axisDifference;
+    //                 }
+    //             }
+    //             return { axis: bestAxis, span: bestAxisDifference };
+    //         }
 
-            function swap(arr: unknown[], i1: number, i2: number) {
-                let temp = arr[i1];
-                arr[i1] = arr[i2];
-                arr[i2] = temp;
-            }
+    //         function swap(arr: unknown[], i1: number, i2: number) {
+    //             let temp = arr[i1];
+    //             arr[i1] = arr[i2];
+    //             arr[i2] = temp;
+    //         }
 
-            function partitionSlice(
-                lo: number, hi: number, axis: number,
-                weightSum: number
-            ) {
-                let target = weightSum / 2;
-                while (true) {
-                    const sliceLength = hi - lo + 1;
+    //         function partitionSlice(
+    //             lo: number, hi: number, axis: number,
+    //             weightSum: number
+    //         ) {
+    //             let target = weightSum / 2;
+    //             while (true) {
+    //                 const sliceLength = hi - lo + 1;
 
-                    // Base cases
-                    if (sliceLength === 0) {
-                        throw new Error('Cannot find median of an empty slice.');
-                    } else if (sliceLength === 1) {
-                        return target * 2 > arr[lo].color[axis] ? lo + 1 : lo;
-                    } else if (sliceLength === 2) {
-                        if (arr[lo] > arr[hi]) swap(arr, lo, hi);
-                        if (target > arr[lo].color[axis]) { // Focus on the left element.
-                            return target * 2 > arr[lo].color[axis] ? lo + 1 : lo;
-                        } else { // Focus on the right element.
-                            return (target - arr[lo].color[axis]) * 2 > arr[hi].color[axis] ? hi + 1 : hi;
-                        }
-                    }
+    //                 // Base cases
+    //                 if (sliceLength === 0) {
+    //                     throw new Error('Cannot find median of an empty slice.');
+    //                 } else if (sliceLength === 1) {
+    //                     return target * 2 > arr[lo].color[axis] ? lo + 1 : lo;
+    //                 } else if (sliceLength === 2) {
+    //                     if (arr[lo] > arr[hi]) swap(arr, lo, hi);
+    //                     if (target > arr[lo].color[axis]) { // Focus on the left element.
+    //                         return target * 2 > arr[lo].color[axis] ? lo + 1 : lo;
+    //                     } else { // Focus on the right element.
+    //                         return (target - arr[lo].color[axis]) * 2 > arr[hi].color[axis] ? hi + 1 : hi;
+    //                     }
+    //                 }
 
-                    // Median of three to choose a pivot
-                    const pi = Math.floor((lo + hi) / 2);
-                    if (arr[lo] > arr[pi]) swap(arr, lo, pi);
-                    if (arr[lo] > arr[hi]) swap(arr, lo, hi);
-                    if (arr[pi] > arr[hi]) swap(arr, pi, hi);
+    //                 // Median of three to choose a pivot
+    //                 const pi = Math.floor((lo + hi) / 2);
+    //                 if (arr[lo] > arr[pi]) swap(arr, lo, pi);
+    //                 if (arr[lo] > arr[hi]) swap(arr, lo, hi);
+    //                 if (arr[pi] > arr[hi]) swap(arr, pi, hi);
 
-                    const threshold = arr[pi];
-                    let i = lo - 1, j = hi + 1;
-                    let rightWeightSum = 0;
+    //                 const threshold = arr[pi];
+    //                 let i = lo - 1, j = hi + 1;
+    //                 let rightWeightSum = 0;
 
-                    // Hoare partitioning
-                    while (true) {
-                        do { i++; } while (arr[i] < threshold);
-                        do { j--; rightWeightSum += arr[j].color[axis]; } while (arr[j] > threshold);
+    //                 // Hoare partitioning
+    //                 while (true) {
+    //                     do { i++; } while (arr[i] < threshold);
+    //                     do { j--; rightWeightSum += arr[j].color[axis]; } while (arr[j] > threshold);
 
-                        rightWeightSum -= arr[j].color[axis];
-                        if (i >= j) {
-                            const leftWeightSum = weightSum - rightWeightSum;
-                            //  tail-recursively "call" the partition function again.
-                            if (target < leftWeightSum) {
-                                // Focus on the left partition
-                                hi = j;
-                                weightSum = leftWeightSum;
-                            } else {
-                                // Focus on the right partition
-                                lo = j + 1;
-                                weightSum = rightWeightSum;
-                                target -= leftWeightSum;
-                            }
-                            break;
-                        }
+    //                     rightWeightSum -= arr[j].color[axis];
+    //                     if (i >= j) {
+    //                         const leftWeightSum = weightSum - rightWeightSum;
+    //                         //  tail-recursively "call" the partition function again.
+    //                         if (target < leftWeightSum) {
+    //                             // Focus on the left partition
+    //                             hi = j;
+    //                             weightSum = leftWeightSum;
+    //                         } else {
+    //                             // Focus on the right partition
+    //                             lo = j + 1;
+    //                             weightSum = rightWeightSum;
+    //                             target -= leftWeightSum;
+    //                         }
+    //                         break;
+    //                     }
 
-                        swap(arr, i, j);
-                        rightWeightSum += arr[j].color[axis];
-                    }
-                }
-            }
+    //                     swap(arr, i, j);
+    //                     rightWeightSum += arr[j].color[axis];
+    //                 }
+    //             }
+    //         }
 
-            type Slice = {
-                indices: { lo: number; hi: number; }; // incl left excl right
-                range: { axis: number; span: number; };
-                weightSum: number;
-            };
-            const sliceQueue = [{
-                indices: { lo: 0, hi: arr.length - 1 },
-                range: findBestAxisInSlice(0, arr.length - 1),
-                weightSum: data.reduce((acc, i) => acc + i.count, 0)
-            }] as Slice[];
+    //         type Slice = {
+    //             indices: { lo: number; hi: number; }; // incl left excl right
+    //             range: { axis: number; span: number; };
+    //             weightSum: number;
+    //         };
+    //         const sliceQueue = [{
+    //             indices: { lo: 0, hi: arr.length - 1 },
+    //             range: findBestAxisInSlice(0, arr.length - 1),
+    //             weightSum: data.reduce((acc, i) => acc + i.count, 0)
+    //         }] as Slice[];
 
-            for (let _ = 0; _ < colorCount; _++) {
-                const bestSliceIdx = sliceQueue.reduce(
-                    (best, slice, i) => {
-                        const span = slice.range.span;
-                        if (span > best.span) {
-                            best.index = i;
-                            best.span = span;
-                        }
-                        return best;
-                    }, { index: NaN, span: 0 }).index;
-                swap(sliceQueue, bestSliceIdx, sliceQueue.length - 1);
-                const slice = sliceQueue.pop()!;
+    //         for (let _ = 0; _ < colorCount; _++) {
+    //             const bestSliceIdx = sliceQueue.reduce(
+    //                 (best, slice, i) => {
+    //                     const span = slice.range.span;
+    //                     if (span > best.span) {
+    //                         best.index = i;
+    //                         best.span = span;
+    //                     }
+    //                     return best;
+    //                 }, { index: NaN, span: 0 }).index;
+    //             swap(sliceQueue, bestSliceIdx, sliceQueue.length - 1);
+    //             const slice = sliceQueue.pop()!;
 
-                const targetWeight = slice.weightSum / 2;
+    //             const targetWeight = slice.weightSum / 2;
 
-                // while (true) {
-                //     const partitionResult = partitionSlice()
-                // }
+    //             // while (true) {
+    //             //     const partitionResult = partitionSlice()
+    //             // }
 
-            }
-        }
-    )
+    //         }
+    //     }
+    // )
 
 ] as const;
 
@@ -688,6 +688,8 @@ const createApp = () => {
             const group = algo.buildParameterPrompt(async (parameter) => {
                 UI.detach([radioGroups.el, ...parameterElements]);
                 progressDisplay.append(document.body);
+                console.log(JSON.stringify(colorData));
+                
                 const result = await algo.run(colorData, parameter, progressDisplay.set);
                 progressDisplay.detach();
                 displayPicture(result, pixels, indexArr, colorData);
