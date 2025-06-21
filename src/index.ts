@@ -2,6 +2,38 @@ type Triple<T = number> = [T, T, T];
 type ColorData = { count: number; oklabColor: Triple; };
 type QuantizationParameter = { paramName: string, tip: string, defaultVal: number; };
 
+function fromRgb(r: number, g: number, b: number) {
+    const [rr, gg, bb] = [r, g, b].map(
+        c => {
+            const c01 = c / 255;
+            return c01 <= 0.04045 ? c01 / 12.92 : Math.pow((c01 + 0.055) / 1.055, 2.4);
+        }
+    );
+    let l = 0.4122214708 * rr + 0.5363325363 * gg + 0.0514459929 * bb;
+    let m = 0.2119034982 * rr + 0.6806995451 * gg + 0.1073969566 * bb;
+    let s = 0.0883024619 * rr + 0.2817188376 * gg + 0.6299787005 * bb;
+    l = Math.cbrt(l); m = Math.cbrt(m); s = Math.cbrt(s);
+    return [
+        l * +0.2104542553 + m * +0.7936177850 + s * -0.0040720468,
+        l * +1.9779984951 + m * -2.4285922050 + s * +0.4505937099,
+        l * +0.0259040371 + m * +0.7827717662 + s * -0.8086757660
+    ] as Triple;
+}
+
+const toRgb = function ([L, A, B]: Triple) {
+    let l = L + A * +0.3963377774 + B * +0.2158037573;
+    let m = L + A * -0.1055613458 + B * -0.0638541728;
+    let s = L + A * -0.0894841775 + B * -1.2914855480;
+    l = l ** 3; m = m ** 3; s = s ** 3;
+    let rr = l * +4.0767416621 + m * -3.3077115913 + s * +0.2309699292;
+    let gg = l * -1.2684380046 + m * +2.6097574011 + s * -0.3413193965;
+    let bb = l * -0.0041960863 + m * -0.7034186147 + s * +1.7076147010;
+    return [rr, gg, bb].map(c => {
+        const c01 = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+        return Math.max(Math.min(Math.round(c01 * 255), 255), 0);
+    }) as Triple;
+};
+
 namespace UI {
     export function append(parent: HTMLElement, children: HTMLElement[]) {
         children.forEach((c) => parent.appendChild(c));
@@ -116,9 +148,18 @@ namespace Data {
 }
 
 function workerize<I, O>(
-    fn: (event: I, postProgress: (n: number) => void) => O
+    fn: (event: I, postProgress: (n: number) => void) => O,
+    dependencies: Record<string, (...args: any[]) => any> = {}
 ) {
+    // Of course this won't work if you're not transpiling
+    // (...is there any TS runtime that does that?)
+    const dependencySources = Object
+        .entries(dependencies)
+        .map(([name, fn]) => `const ${name} = ${fn.toString()};`)
+        .join('\n');
+
     const fnStr = `
+    ${dependencySources}
     self.onmessage = (ev) => {
         const fn = (n) => { postMessage({ done: false, prog: n }) };
         const out = (${fn.toString()})(ev.data, fn);
@@ -150,24 +191,6 @@ function workerize<I, O>(
 }
 
 function indexColors(data: Uint8ClampedArray, postProgress: (n: number) => void) {
-    function fromRgb(r: number, g: number, b: number) {
-        const [rr, gg, bb] = [r, g, b].map(
-            c => {
-                const c01 = c / 255;
-                return c01 <= 0.04045 ? c01 / 12.92 : Math.pow((c01 + 0.055) / 1.055, 2.4);
-            }
-        );
-        let l = 0.4122214708 * rr + 0.5363325363 * gg + 0.0514459929 * bb;
-        let m = 0.2119034982 * rr + 0.6806995451 * gg + 0.1073969566 * bb;
-        let s = 0.0883024619 * rr + 0.2817188376 * gg + 0.6299787005 * bb;
-        l = Math.cbrt(l); m = Math.cbrt(m); s = Math.cbrt(s);
-        return [
-            l * +0.2104542553 + m * +0.7936177850 + s * -0.0040720468,
-            l * +1.9779984951 + m * -2.4285922050 + s * +0.4505937099,
-            l * +0.0259040371 + m * +0.7827717662 + s * -0.8086757660
-        ] as Triple;
-    }
-
     const colorCodeToIndex = new Map<number, number>();
     const colorData = <ColorData[]>[];
     const indexArr = new Array<number>(data.length / 4);
@@ -210,7 +233,7 @@ function createQuantizationAlgorithm<const P extends QuantizationParameter[]>(
         colors: Triple[];
     }
 ) {
-    const runner = workerize(algorithm);
+    const runner = workerize(algorithm, { toRgb });
     const normalizedName = name.toLowerCase().replaceAll(/[^a-z0-9]/g, '-');
     let storedParameters = params.map((s) => s.defaultVal);
     return {
@@ -252,7 +275,6 @@ function createQuantizationAlgorithm<const P extends QuantizationParameter[]>(
     };
 };
 
-
 const ALGORITHMS = [
     createQuantizationAlgorithm('K-Means',
         'Tries to find the best set of colors that is the closest to each ' +
@@ -267,20 +289,6 @@ const ALGORITHMS = [
                 colorCount = data.length;
             }
             const maxIteration = 100;
-            function toRgb([L, A, B]: Triple) {
-                let l = L + A * +0.3963377774 + B * +0.2158037573;
-                let m = L + A * -0.1055613458 + B * -0.0638541728;
-                let s = L + A * -0.0894841775 + B * -1.2914855480;
-                l = l ** 3; m = m ** 3; s = s ** 3;
-                let rr = l * +4.0767416621 + m * -3.3077115913 + s * +0.2309699292;
-                let gg = l * -1.2684380046 + m * +2.6097574011 + s * -0.3413193965;
-                let bb = l * -0.0041960863 + m * -0.7034186147 + s * +1.7076147010;
-                return [rr, gg, bb].map(c => {
-                    const c01 = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
-                    return Math.max(Math.min(Math.round(c01 * 255), 255), 0);
-                }) as Triple;
-            }
-
             function squaredDistance([ax, ay, az]: Triple, [bx, by, bz]: Triple) {
                 const dx = ax - bx, dy = ay - by, dz = az - bz;
                 return dx * dx + dy * dy + dz * dz;
@@ -365,10 +373,12 @@ const ALGORITHMS = [
                     bestScore = score;
                     bestColors = centroids;
                 }
+
+                bestColors.sort((a, b) => a[0] - b[0]);
             }
             return {
-                assignment: bestAssignment.map(oklab => toRgb(oklab)),
-                colors: bestColors.map(oklab => toRgb(oklab))
+                assignment: bestAssignment,
+                colors: bestColors
             };
         })
     ),
@@ -379,19 +389,6 @@ const ALGORITHMS = [
         [{ paramName: 'Closeness', defaultVal: 0.07, tip: 'How close the colors should be to be considered neighbors' }],
         ({ param: [radius], data }, postProgress) => {
             const maxIteration = 100;
-            function toRgb([L, A, B]: Triple) {
-                let l = L + A * +0.3963377774 + B * +0.2158037573;
-                let m = L + A * -0.1055613458 + B * -0.0638541728;
-                let s = L + A * -0.0894841775 + B * -1.2914855480;
-                l = l ** 3; m = m ** 3; s = s ** 3;
-                let rr = l * +4.0767416621 + m * -3.3077115913 + s * +0.2309699292;
-                let gg = l * -1.2684380046 + m * +2.6097574011 + s * -0.3413193965;
-                let bb = l * -0.0041960863 + m * -0.7034186147 + s * +1.7076147010;
-                return [rr, gg, bb].map(c => {
-                    const c01 = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
-                    return Math.max(Math.min(Math.round(c01 * 255), 255), 0);
-                }) as Triple;
-            }
             let currentPoints = data.slice();
             let bestProgress = 0;
             for (let i = 0; i < maxIteration; i++) {
@@ -439,153 +436,21 @@ const ALGORITHMS = [
             }
 
             const colorSet = new Map<number, Triple>();
-            const assignment = currentPoints.map((s) => {
-                const rgb = toRgb(s.oklabColor);
+            const assignment = currentPoints.map(({ oklabColor: lab }) => {
+                const rgb = toRgb(lab);
                 const [r, g, b] = rgb;
                 const colorKey = (r << 24) | (g << 12) | (b << 0);
-                colorSet.set(colorKey, rgb);
-                return rgb;
+                colorSet.set(colorKey, lab);
+                return lab;
             });
-            return { assignment, colors: Array.from(colorSet.values()) };
+            const colors = Array.from(colorSet.values());
+            colors.sort((a, b) => a[0] - b[0]);
+            return {
+                assignment,
+                colors
+            };
         }
     ),
-
-    // createQuantizationAlgorithm('Median cut',
-    //     '',
-    //     [{ paramName: 'Color count', defaultVal: 8, tip: 'How many colors to use' }],
-    //     ({ param: [colorCount], data }, postProgress) => {
-    //         const arr = data.map((s, i) => ({
-    //             weight: s.count,
-    //             color: s.oklabColor,
-    //             index: i
-    //         }));
-    //         type Axis = 0 | 1 | 2;
-    //         function findBestAxisInSlice(lo: number, hi: number) {
-    //             const bestValues = Array.from(
-    //                 { length: 3 },
-    //                 () => ({ min: Infinity, max: -Infinity })
-    //             ) as Triple<{ min: number, max: number; }>;
-    //             for (let i = lo; i <= hi; i++) {
-    //                 for (let axis = 0 as Axis; axis <= 3; axis++) {
-    //                     const component = data[i].oklabColor[axis];
-    //                     const { min, max } = bestValues[axis];
-    //                     bestValues[axis].min = Math.min(min, component);
-    //                     bestValues[axis].max = Math.max(max, component);
-    //                 }
-    //             }
-    //             let bestAxis = 0;
-    //             let bestAxisDifference = -Infinity;
-    //             for (let axis = 0 as Axis; axis <= 3; axis++) {
-    //                 const axisValues = bestValues[axis];
-    //                 const axisDifference = axisValues.max - axisValues.min;
-    //                 if (axisDifference > bestAxisDifference) {
-    //                     bestAxis = axis;
-    //                     bestAxisDifference = axisDifference;
-    //                 }
-    //             }
-    //             return { axis: bestAxis, span: bestAxisDifference };
-    //         }
-
-    //         function swap(arr: unknown[], i1: number, i2: number) {
-    //             let temp = arr[i1];
-    //             arr[i1] = arr[i2];
-    //             arr[i2] = temp;
-    //         }
-
-    //         function partitionSlice(
-    //             lo: number, hi: number, axis: number,
-    //             weightSum: number
-    //         ) {
-    //             let target = weightSum / 2;
-    //             while (true) {
-    //                 const sliceLength = hi - lo + 1;
-
-    //                 // Base cases
-    //                 if (sliceLength === 0) {
-    //                     throw new Error('Cannot find median of an empty slice.');
-    //                 } else if (sliceLength === 1) {
-    //                     return target * 2 > arr[lo].color[axis] ? lo + 1 : lo;
-    //                 } else if (sliceLength === 2) {
-    //                     if (arr[lo] > arr[hi]) swap(arr, lo, hi);
-    //                     if (target > arr[lo].color[axis]) { // Focus on the left element.
-    //                         return target * 2 > arr[lo].color[axis] ? lo + 1 : lo;
-    //                     } else { // Focus on the right element.
-    //                         return (target - arr[lo].color[axis]) * 2 > arr[hi].color[axis] ? hi + 1 : hi;
-    //                     }
-    //                 }
-
-    //                 // Median of three to choose a pivot
-    //                 const pi = Math.floor((lo + hi) / 2);
-    //                 if (arr[lo] > arr[pi]) swap(arr, lo, pi);
-    //                 if (arr[lo] > arr[hi]) swap(arr, lo, hi);
-    //                 if (arr[pi] > arr[hi]) swap(arr, pi, hi);
-
-    //                 const threshold = arr[pi];
-    //                 let i = lo - 1, j = hi + 1;
-    //                 let rightWeightSum = 0;
-
-    //                 // Hoare partitioning
-    //                 while (true) {
-    //                     do { i++; } while (arr[i] < threshold);
-    //                     do { j--; rightWeightSum += arr[j].color[axis]; } while (arr[j] > threshold);
-
-    //                     rightWeightSum -= arr[j].color[axis];
-    //                     if (i >= j) {
-    //                         const leftWeightSum = weightSum - rightWeightSum;
-    //                         //  tail-recursively "call" the partition function again.
-    //                         if (target < leftWeightSum) {
-    //                             // Focus on the left partition
-    //                             hi = j;
-    //                             weightSum = leftWeightSum;
-    //                         } else {
-    //                             // Focus on the right partition
-    //                             lo = j + 1;
-    //                             weightSum = rightWeightSum;
-    //                             target -= leftWeightSum;
-    //                         }
-    //                         break;
-    //                     }
-
-    //                     swap(arr, i, j);
-    //                     rightWeightSum += arr[j].color[axis];
-    //                 }
-    //             }
-    //         }
-
-    //         type Slice = {
-    //             indices: { lo: number; hi: number; }; // incl left excl right
-    //             range: { axis: number; span: number; };
-    //             weightSum: number;
-    //         };
-    //         const sliceQueue = [{
-    //             indices: { lo: 0, hi: arr.length - 1 },
-    //             range: findBestAxisInSlice(0, arr.length - 1),
-    //             weightSum: data.reduce((acc, i) => acc + i.count, 0)
-    //         }] as Slice[];
-
-    //         for (let _ = 0; _ < colorCount; _++) {
-    //             const bestSliceIdx = sliceQueue.reduce(
-    //                 (best, slice, i) => {
-    //                     const span = slice.range.span;
-    //                     if (span > best.span) {
-    //                         best.index = i;
-    //                         best.span = span;
-    //                     }
-    //                     return best;
-    //                 }, { index: NaN, span: 0 }).index;
-    //             swap(sliceQueue, bestSliceIdx, sliceQueue.length - 1);
-    //             const slice = sliceQueue.pop()!;
-
-    //             const targetWeight = slice.weightSum / 2;
-
-    //             // while (true) {
-    //             //     const partitionResult = partitionSlice()
-    //             // }
-
-    //         }
-    //     }
-    // )
-
 ] as const;
 
 function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
@@ -604,7 +469,7 @@ function pruneRgbBits(pixels: Uint8ClampedArray, totalBits: number) {
 }
 
 const createApp = () => {
-    const IndexerRunner = workerize(indexColors);
+    const IndexerRunner = workerize(indexColors, { fromRgb });
     const progressDisplay = UI.createProgressBar();
     const pixelReader = Data.ImageArrayConverter();
     let algorithmPreferenceIndex = 0;
@@ -635,10 +500,11 @@ const createApp = () => {
 
         colorData: ColorData[]
     ) {
+        const assignmentRgb = result.assignment.map(s => toRgb(s));
         for (let i = 0; i < indexArr.length; i++) {
             const colIndex = indexArr[i];
             if (colIndex !== -1) {
-                const [r, g, b] = result.assignment[indexArr[i]];
+                const [r, g, b] = assignmentRgb[indexArr[i]];
                 pixels[4 * i + 0] = r;
                 pixels[4 * i + 1] = g;
                 pixels[4 * i + 2] = b;
@@ -648,7 +514,8 @@ const createApp = () => {
         const img2 = document.createElement('img');
         await pixelReader.write(img2, pixels);
 
-        const colDisplay = UI.createGroup(result.colors.map(([r, g, b]) => {
+        const colDisplay = UI.createGroup(result.colors.map((lab) => {
+            const [r, g, b] = toRgb(lab);
             const box = document.createElement('div');
             box.style.background = `rgba(${r}, ${g}, ${b}, 1.0)`;
             box.classList.add('col-list');
@@ -688,8 +555,7 @@ const createApp = () => {
             const group = algo.buildParameterPrompt(async (parameter) => {
                 UI.detach([radioGroups.el, ...parameterElements]);
                 progressDisplay.append(document.body);
-                console.log(JSON.stringify(colorData));
-                
+
                 const result = await algo.run(colorData, parameter, progressDisplay.set);
                 progressDisplay.detach();
                 displayPicture(result, pixels, indexArr, colorData);
@@ -755,7 +621,6 @@ const createApp = () => {
     }
     return { run };
 };
-
 
 
 createApp().run();
